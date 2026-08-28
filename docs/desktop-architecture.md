@@ -1,0 +1,159 @@
+# Phase 3 — Desktop: local-first architecture
+
+**26–28 Aug 2026.** Design decisions before code, per the same discipline the
+Phase 1 schema and the tax module got. Answers the architectural gap flagged
+in `PLAN.md` §4.3: Tauri-as-thin-shell gives Keychain and notifications but
+not offline; genuine local-first is a real subsystem. This is that subsystem.
+
+## 1. Why this can't just be the existing Next.js app in a Tauri window
+
+The web app (`app/`) is built on React Server Components and Server Actions —
+`app/(app)/page.tsx` is `async` and calls `createServerSupabase()`, which
+needs a live server process and a network round-trip to Supabase for every
+render. A Tauri window pointing at that app with no network shows nothing:
+there is no server to render it and no data to read.
+
+Two ways to get real offline:
+
+1. **Bundle a Node/Next server inside the Tauri app** (a "sidecar" binary)
+   and keep talking to Postgres through it. Heavy, and it still needs
+   Postgres reachable — bundling the server doesn't remove the network
+   dependency, it just moves where the HTTP call originates from.
+2. **A client-only frontend backed by local SQLite**, synced to Supabase in
+   the background when a network exists. The window renders from a database
+   sitting on disk; network is an input to that database, not a rendering
+   dependency.
+
+(2) is what "local-first" means and is what's built here. It means the
+desktop app is architecturally a different data layer from the web app, not
+a repackaging of it — they can share pure logic (`lib/money.ts`,
+`lib/dates.ts`, `lib/tax-company/*`) but not `lib/db/queries.ts` or
+`lib/db/actions.ts`, which are Supabase-server-coupled by design.
+
+## 2. Scope of this pass
+
+Full UI parity across all eleven web-app screens in a new frontend framework
+is not attempted here — that's real, separate effort once the plumbing is
+proven. This phase builds and verifies the plumbing end-to-end for one
+representative slice (time entries — the newest, most write-heavy table),
+so the pattern is provably correct before it's repeated for every table:
+
+- A Tauri v2 shell that boots (`desktop/`).
+- A local SQLite schema (`desktop/src-tauri/migrations/0001_local.sql`) for
+  the tables that matter most for "opens with no network and shows me
+  everything useful": clients, projects, invoices, expenses, recurring
+  costs, tasks, time entries. Meetings, work artefacts, match rules and tax
+  obligations stay server-only for now — Granola sync (Phase 4) and
+  screenshot storage don't have an offline case worth solving yet.
+- A sync engine, as **pure TypeScript with no Tauri or Supabase import** —
+  see §4 — unit-testable the same way `lib/db/costs.ts` is.
+- Tauri commands bridging the local SQLite database to the frontend.
+- Session storage via a Keychain-backed Tauri plugin.
+
+## 3. What's actually verified here, and what needs Joe's Mac
+
+This container is Linux with no macOS SDK, no Xcode, no Keychain. Honestly:
+
+| Claim | Verified how | Confidence |
+|---|---|---|
+| The local SQLite schema is valid and behaves correctly (constraints, triggers) | Ran against `node:sqlite` — same discipline as the Postgres migrations | High |
+| The sync engine's conflict resolution and outbox logic is correct | Pure-function unit tests, no I/O | High |
+| The Rust compiles AND links | `cargo build` (not just `check`) on Linux, producing a real linked ELF binary — after `vite build` produced real frontend assets for it to embed | High for Linux; still Medium for macOS specifically — a Linux link succeeding says nothing about macOS-only dependencies (Keychain, Cocoa) linking cleanly there |
+| Tauri commands are wired correctly | Rust unit tests + `cargo check`/`clippy`/`test`, all passing (5 Rust tests over `db.rs`); the generated `gen/schemas/acl-manifests.json` was inspected directly and confirms app-level commands (`db_query` etc.) carry no ACL entries of their own — `core:default` in `capabilities/default.json` is what actually reaches them, not a guessed permission string | High for compiling and the SQL bridge logic; still not a live invoke() round-trip |
+| Keychain storage actually works | **Not verified** — no Keychain on Linux | **None — needs a Mac** |
+| The app actually launches as a window, renders, and is usable | **Not verified** — Tauri's runtime needs a display and a macOS (or Linux desktop) target build | **None — needs a Mac or a GUI Linux box** |
+| Code signing / notarization / a distributable `.app` | Out of scope entirely from here | **None — needs a Mac + an Apple developer account** |
+
+Anything in the bottom three rows goes back to the Notion action list as
+"needs your Mac to verify," not silently claimed as done.
+
+## 4. The sync engine
+
+### 4.1 Data model
+
+Every synced table gains, locally, what it already has server-side —
+`updated_at`, `deleted_at` — plus two bookkeeping tables that exist ONLY
+locally, never synced themselves:
+
+```sql
+-- One row per pending local write, replayed against Supabase when online.
+-- op is the whole write, not a diff — simpler to reason about, and every
+-- table here is small enough that whole-row upserts are cheap.
+create table outbox (
+  id          text primary key,      -- uuid, generated locally
+  table_name  text not null,
+  row_id      text not null,         -- the uuid of the row being changed
+  op          text not null check (op in ('upsert','delete')),
+  -- ALWAYS present, even for a delete — see §4.1's note below. An earlier
+  -- draft of this table let payload be null for a delete; that shipped as a
+  -- real bug (a delete had nothing to actually write deleted_at from) and
+  -- was caught by a unit test, not by review. Fixed here and in the SQL.
+  payload     text not null,         -- JSON of the row's full current state
+  created_at  text not null,         -- ISO 8601 — when queued, for ordering
+  attempts    integer not null default 0
+);
+
+-- One row per table, tracking how far a pull has progressed.
+create table sync_cursor (
+  table_name  text primary key,
+  last_synced_at text not null       -- server updated_at watermark
+);
+```
+
+### 4.1a A "delete" is a soft-delete upsert, not a distinct write
+
+This app soft-deletes everywhere — Postgres and the local SQLite schema both
+use `deleted_at`, never a real `DELETE`. So on the wire, a delete IS an
+upsert: the outbox payload for one already has `deleted_at` set, and pushing
+it is the exact same `writeRemoteRow` call as any other upsert. `op` is kept
+on the outbox row only so a local store can show the user "you deleted this"
+in its own UI; the sync engine itself does not branch on it.
+
+### 4.2 Conflict resolution: last-write-wins on `updated_at`
+
+Chosen over a CRDT or operational-transform approach deliberately — this is
+a **single operator** on at most two devices (a laptop and a desktop, say),
+never two people editing the same row concurrently. The failure mode LWW is
+bad at (silently discarding a concurrent edit) essentially cannot happen
+here; the failure mode it's good at (simple, auditable, no merge UI) is
+worth having. Revisit if multi-device concurrent editing becomes real.
+
+Rule: on both push and pull, the row with the later `updated_at` wins.
+`deleted_at` is just another column under this rule — a delete is a write
+like any other and last-write-wins applies to it the same way, so an edit
+after a delete on another device correctly un-deletes the row, and a delete
+after an edit correctly wins.
+
+### 4.3 Push (local → server)
+
+1. Read all `outbox` rows, oldest first.
+2. For each: fetch the current server row (if any) by id.
+3. If the server row is missing, or the outbox row's `updated_at` (inside
+   its JSON payload) is later than the server row's — push it (upsert or
+   delete). Otherwise, the server already has a later write; drop the
+   outbox entry without pushing (the eventual pull will bring the newer
+   server version down).
+4. On success, delete the outbox row. On failure (network, auth), leave it
+   and increment `attempts` — retried on the next sync tick, not immediately
+   in a tight loop.
+
+### 4.4 Pull (server → local)
+
+1. For each synced table, read `sync_cursor.last_synced_at`.
+2. Fetch server rows with `updated_at > cursor`, ordered by `updated_at`.
+3. For each: if the local row is missing, or the server row's `updated_at`
+   is later than the local row's — write it locally. Otherwise skip (local
+   has an un-pushed newer edit sitting in the outbox; pushing that later
+   will bring the server up to date without this pull overwriting it first).
+4. Advance the cursor to the latest `updated_at` seen.
+
+### 4.5 Why pure TypeScript, not Rust
+
+The sync engine takes a `LocalStore` and `RemoteStore` interface — small,
+injectable, mockable — rather than talking to `better-sqlite3` or Supabase
+directly. That is what makes §4.3/§4.4 testable with plain Vitest, the same
+suite that already covers the tax and money logic, with no Tauri runtime,
+no real SQLite file, and no network. The Tauri command layer (Rust) is a
+thin adapter satisfying `LocalStore`; the actual `@supabase/supabase-js`
+client satisfies `RemoteStore`. Correctness of the *policy* (§4.2–4.4) is
+proven independently of correctness of the *plumbing*.

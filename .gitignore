@@ -6,3 +6,9 @@ out/
 *.tsbuildinfo
 next-env.d.ts
 .DS_Store
+
+# Desktop (Tauri) — Rust build artifacts and generated ACL schemas
+desktop/src-tauri/target/
+desktop/src-tauri/gen/
+desktop/node_modules/
+desktop/dist/
