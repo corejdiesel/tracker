@@ -106,3 +106,41 @@ export interface ProjectWithClient extends Project {
 export interface InvoiceWithClient extends Invoice {
   clients: Pick<Client, "name"> | null;
 }
+
+export type ArtefactKind = "screenshot" | "file" | "link";
+
+export interface TimeEntry {
+  id: Uuid;
+  project_id: Uuid;
+  task_id: Uuid | null;
+  worked_on: IsoDate;
+  minutes: number;
+  note: string | null;
+  billable: boolean;
+  source: RecordSource | "timer";
+}
+
+export interface TimeEntryWithProject extends TimeEntry {
+  projects: (Pick<Project, "name"> & { clients: Pick<Client, "name"> | null }) | null;
+}
+
+export interface RunningTimer {
+  owner_id: Uuid;
+  project_id: Uuid;
+  task_id: Uuid | null;
+  /** ISO 8601 timestamp with zone — a timer is an instant, unlike a logged day. */
+  started_at: string;
+  note: string | null;
+}
+
+export interface WorkArtefact {
+  id: Uuid;
+  project_id: Uuid;
+  time_entry_id: Uuid | null;
+  kind: ArtefactKind;
+  storage_path: string | null;
+  url: string | null;
+  caption: string | null;
+  captured_at: string;
+  byte_size: number | null;
+}

@@ -52,6 +52,17 @@ classifies by lexicographic comparison and constructs `Date` only in UTC.
 carries `source`, `source_ref` and `confidence`, so the UI can always separate
 what the machine decided from what was entered by hand.
 
+**A session is time plus evidence.** A `time_entry` carries the minutes, the
+note describing what was done, and any screenshots attached to it — one row, so
+the hours stay reviewable a month later. All logged time counts towards a
+project's effective rate, billable or not: non-billable hours are exactly what
+erodes it.
+
+**Work artefacts are private.** Screenshots of client work are the most
+sensitive data here. The storage bucket is private, objects are namespaced
+`{owner_id}/{project_id}/…`, storage RLS checks that first segment, and images
+render through short-lived signed URLs rather than any durable public path.
+
 **Never invent a tax number.** If a figure cannot be computed confidently, the
 app says so and names what is missing. The safe-to-spend card on Today is the
 worked example.
@@ -60,12 +71,13 @@ worked example.
 
 ```
 app/(auth)/login      Sign in
-app/(app)             Today, timetable, clients, projects, invoices, costs
+app/(app)             Today, timetable, time, clients, projects, invoices, costs
 components/ui         Design-system primitives — no default shadcn
 lib/money.ts          bigint-pence handling and formatting
 lib/dates.ts          UK tax year and timezone-safe date maths
 lib/db                Row types, queries, server actions, forecast logic
-supabase/migrations   Schema. 0001 verified against Postgres 16.
+supabase/migrations   Schema. 0001 and 0002 verified against Postgres 16;
+                      0002b touches Supabase storage and can only run there.
 proxy.ts              Session refresh and route protection (Next 16 convention)
 ```
 

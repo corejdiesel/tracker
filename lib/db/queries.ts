@@ -1,7 +1,10 @@
 import { createServerSupabase } from "@/lib/supabase/server";
+import { ARTEFACT_BUCKET } from "./constants";
 import type {
-  Client, InvoiceWithClient, ProjectWithClient, RecurringCost, Task,
+  Client, InvoiceWithClient, ProjectWithClient, RecurringCost, RunningTimer,
+  Task, TimeEntryWithProject, WorkArtefact,
 } from "./types";
+
 
 /**
  * Every query filters `deleted_at is null` — nothing is hard-deleted, so a
@@ -74,4 +77,79 @@ export async function listOpenTasks(): Promise<Task[]> {
 
   if (error) throw new Error(error.message);
   return data ?? [];
+}
+
+/* Time and the session log ─────────────────────────────────────────────────*/
+
+export async function listTimeEntries(since?: string): Promise<TimeEntryWithProject[]> {
+  const supabase = await createServerSupabase();
+  let query = supabase
+    .from("time_entries")
+    .select("id,project_id,task_id,worked_on,minutes,note,billable,source,projects(name,clients(name))")
+    .is("deleted_at", null);
+
+  if (since) query = query.gte("worked_on", since);
+
+  const { data, error } = await query
+    .order("worked_on", { ascending: false })
+    .order("created_at", { ascending: false });
+
+  if (error) throw new Error(error.message);
+  return (data ?? []) as unknown as TimeEntryWithProject[];
+}
+
+export async function getRunningTimer(): Promise<RunningTimer | null> {
+  const supabase = await createServerSupabase();
+  // At most one row exists per user — owner_id is the primary key.
+  const { data, error } = await supabase
+    .from("running_timers")
+    .select("owner_id,project_id,task_id,started_at,note")
+    .maybeSingle();
+
+  if (error) throw new Error(error.message);
+  return data;
+}
+
+export async function listArtefacts(limit = 60): Promise<WorkArtefact[]> {
+  const supabase = await createServerSupabase();
+  const { data, error } = await supabase
+    .from("work_artefacts")
+    .select("id,project_id,time_entry_id,kind,storage_path,url,caption,captured_at,byte_size")
+    .is("deleted_at", null)
+    .order("captured_at", { ascending: false })
+    .limit(limit);
+
+  if (error) throw new Error(error.message);
+  return data ?? [];
+}
+
+/**
+ * Short-lived signed URLs for stored artefacts. The bucket is private, so
+ * nothing renders without one — and the URLs expire rather than becoming a
+ * durable public link to client work.
+ */
+export async function signArtefacts(
+  artefacts: readonly WorkArtefact[],
+  expiresInSeconds = 300
+): Promise<Map<string, string>> {
+  const paths = artefacts
+    .map((a) => a.storage_path)
+    .filter((path): path is string => path !== null);
+
+  if (paths.length === 0) return new Map();
+
+  const supabase = await createServerSupabase();
+  const { data, error } = await supabase.storage
+    .from(ARTEFACT_BUCKET)
+    .createSignedUrls(paths, expiresInSeconds);
+
+  // A missing thumbnail should not take down the page — the UI falls back to
+  // a caption-only tile.
+  if (error || !data) return new Map();
+
+  const signed = new Map<string, string>();
+  for (const item of data) {
+    if (item.signedUrl && item.path) signed.set(item.path, item.signedUrl);
+  }
+  return signed;
 }

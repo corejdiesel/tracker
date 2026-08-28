@@ -1,10 +1,11 @@
 import Link from "next/link";
-import { CalendarDays, Coins, FileText, Home, Receipt, Users } from "lucide-react";
+import { CalendarDays, Clock, Coins, FileText, Home, Receipt, Users } from "lucide-react";
 import { signOut } from "@/app/(auth)/login/actions";
 
 const nav = [
   { href: "/", label: "Today", icon: Home },
   { href: "/timetable", label: "Timetable", icon: CalendarDays },
+  { href: "/time", label: "Time", icon: Clock },
   { href: "/clients", label: "Clients", icon: Users },
   { href: "/projects", label: "Projects", icon: FileText },
   { href: "/invoices", label: "Money in", icon: Receipt },

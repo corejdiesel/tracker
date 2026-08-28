@@ -10,6 +10,7 @@
 export const APP_ROUTES = [
   "/",
   "/timetable",
+  "/time",
   "/clients",
   "/projects",
   "/invoices",

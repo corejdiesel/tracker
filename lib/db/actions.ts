@@ -5,6 +5,7 @@ import { z } from "zod";
 import { createServerSupabase } from "@/lib/supabase/server";
 import { parsePounds } from "@/lib/money";
 import { isIsoDate } from "@/lib/dates";
+import { elapsedMinutes } from "./time";
 
 export interface FormState {
   error?: string;
@@ -214,5 +215,200 @@ export async function createRecurringCost(_prev: FormState, formData: FormData):
 
   revalidatePath("/costs");
   revalidatePath("/");
+  return {};
+}
+
+/* Time tracking ────────────────────────────────────────────────────────────*/
+
+export async function startTimer(_prev: FormState, formData: FormData): Promise<FormState> {
+  try {
+    const input = z
+      .object({ project_id: z.uuid("Pick a project."), note: z.string().trim().optional() })
+      .parse(Object.fromEntries(formData));
+
+    const supabase = await createServerSupabase();
+    const { error } = await supabase.from("running_timers").insert({
+      project_id: input.project_id,
+      note: input.note || null,
+      owner_id: await ownerId(),
+    });
+
+    if (error) {
+      // owner_id is the primary key, so a second start collides by design.
+      throw new Error(
+        error.code === "23505"
+          ? "A timer is already running. Stop it before starting another."
+          : error.message
+      );
+    }
+  } catch (error) {
+    return fail(error);
+  }
+
+  revalidatePath("/time");
+  return {};
+}
+
+/**
+ * Stop the timer and write the session. Rounds elapsed time to the nearest
+ * minute floor; a timer stopped inside its first minute is discarded rather
+ * than recorded as zero, which the `minutes > 0` constraint would reject
+ * anyway and which is not a session worth keeping.
+ */
+export async function stopTimer(): Promise<void> {
+  const supabase = await createServerSupabase();
+  const owner = await ownerId();
+
+  const { data: timer } = await supabase
+    .from("running_timers")
+    .select("project_id,task_id,started_at,note")
+    .maybeSingle();
+
+  if (!timer) return;
+
+  const minutes = elapsedMinutes(timer.started_at);
+
+  if (minutes > 0) {
+    await supabase.from("time_entries").insert({
+      owner_id: owner,
+      project_id: timer.project_id,
+      task_id: timer.task_id,
+      // The day the session started, in the operator's own calendar.
+      worked_on: timer.started_at.slice(0, 10),
+      minutes: Math.min(minutes, 1440),
+      note: timer.note,
+      source: "timer",
+    });
+  }
+
+  await supabase.from("running_timers").delete().eq("owner_id", owner);
+
+  revalidatePath("/time");
+  revalidatePath("/");
+}
+
+export async function discardTimer(): Promise<void> {
+  const supabase = await createServerSupabase();
+  await supabase.from("running_timers").delete().eq("owner_id", await ownerId());
+  revalidatePath("/time");
+}
+
+const timeEntryInput = z.object({
+  project_id: z.uuid("Pick a project."),
+  worked_on: isoDate,
+  hours: z.coerce.number().min(0).max(24),
+  minutes: z.coerce.number().int().min(0).max(59),
+  note: z.string().trim().optional(),
+  billable: z.string().optional(),
+});
+
+export async function logTime(_prev: FormState, formData: FormData): Promise<FormState> {
+  try {
+    const input = timeEntryInput.parse(Object.fromEntries(formData));
+    const total = Math.round(input.hours * 60) + input.minutes;
+
+    if (total <= 0) throw new Error("Log at least a minute.");
+    if (total > 1440) throw new Error("That's more than a day.");
+
+    const supabase = await createServerSupabase();
+    const { error } = await supabase.from("time_entries").insert({
+      project_id: input.project_id,
+      worked_on: input.worked_on,
+      minutes: total,
+      note: input.note || null,
+      // An unchecked checkbox sends nothing at all.
+      billable: input.billable === "on",
+      source: "manual",
+      owner_id: await ownerId(),
+    });
+
+    if (error) throw new Error(error.message);
+  } catch (error) {
+    return fail(error);
+  }
+
+  revalidatePath("/time");
+  revalidatePath("/");
+  return {};
+}
+
+/* Work artefacts ───────────────────────────────────────────────────────────*/
+
+/**
+ * Record an artefact after the browser has uploaded the file straight to
+ * storage. The bytes never pass through a server action — a screenshot would
+ * blow the action body limit and there is no reason to proxy it.
+ */
+export async function recordArtefact(input: {
+  projectId: string;
+  timeEntryId?: string | null;
+  storagePath: string;
+  caption?: string | null;
+  byteSize?: number | null;
+}): Promise<FormState> {
+  try {
+    const parsed = z
+      .object({
+        projectId: z.uuid(),
+        timeEntryId: z.uuid().nullable().optional(),
+        storagePath: z.string().min(1),
+        caption: z.string().trim().nullable().optional(),
+        byteSize: z.number().int().min(0).nullable().optional(),
+      })
+      .parse(input);
+
+    const owner = await ownerId();
+
+    // Storage RLS keys on the first path segment. Re-check it here so a
+    // tampered client cannot record a row pointing at someone else's object.
+    if (!parsed.storagePath.startsWith(`${owner}/`)) {
+      throw new Error("That file doesn't belong to this account.");
+    }
+
+    const supabase = await createServerSupabase();
+    const { error } = await supabase.from("work_artefacts").insert({
+      owner_id: owner,
+      project_id: parsed.projectId,
+      time_entry_id: parsed.timeEntryId ?? null,
+      kind: "screenshot",
+      storage_path: parsed.storagePath,
+      caption: parsed.caption || null,
+      byte_size: parsed.byteSize ?? null,
+    });
+
+    if (error) throw new Error(error.message);
+  } catch (error) {
+    return fail(error);
+  }
+
+  revalidatePath("/time");
+  return {};
+}
+
+export async function addArtefactLink(_prev: FormState, formData: FormData): Promise<FormState> {
+  try {
+    const input = z
+      .object({
+        project_id: z.uuid("Pick a project."),
+        url: z.url("That isn't a valid URL."),
+        caption: z.string().trim().optional(),
+      })
+      .parse(Object.fromEntries(formData));
+
+    const supabase = await createServerSupabase();
+    const { error } = await supabase.from("work_artefacts").insert({
+      owner_id: await ownerId(),
+      project_id: input.project_id,
+      kind: "link",
+      url: input.url,
+      caption: input.caption || null,
+    });
+
+    if (error) throw new Error(error.message);
+  } catch (error) {
+    return fail(error);
+  }
+
+  revalidatePath("/time");
   return {};
 }

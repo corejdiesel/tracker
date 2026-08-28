@@ -5,17 +5,22 @@ import { addDays, formatDate, formatDateShort, relativeDays, todayIso } from "@/
 import { formatMoney, formatMoneyWhole } from "@/lib/money";
 import { monthlyBurn } from "@/lib/db/costs";
 import { effectiveStatus, expectedBetween, totalOverdue, totalOwed } from "@/lib/db/invoices";
-import { listInvoices, listOpenTasks, listRecurringCosts } from "@/lib/db/queries";
+import { listInvoices, listOpenTasks, listRecurringCosts, listTimeEntries } from "@/lib/db/queries";
+import { formatDuration, totalMinutes } from "@/lib/db/time";
 
 export const metadata = { title: "Today · Freelance OS" };
 
 export default async function TodayPage() {
   const today = todayIso();
-  const [invoices, costs, tasks] = await Promise.all([
+  const [invoices, costs, tasks, entries] = await Promise.all([
     listInvoices(),
     listRecurringCosts(),
     listOpenTasks(),
+    listTimeEntries(addDays(today, -6)),
   ]);
+
+  const loggedToday = totalMinutes(entries.filter((e) => e.worked_on === today));
+  const loggedThisWeek = totalMinutes(entries);
 
   const owed = totalOwed(invoices);
   const overdue = totalOverdue(invoices, today);
@@ -32,7 +37,10 @@ export default async function TodayPage() {
 
   return (
     <>
-      <PageHeader title="Today" subtitle={formatDate(today)} />
+      <PageHeader
+        title="Today"
+        subtitle={`${formatDate(today)} · ${formatDuration(loggedToday)} logged today, ${formatDuration(loggedThisWeek)} in the last week`}
+      />
 
       <PageBody>
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
