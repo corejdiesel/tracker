@@ -60,7 +60,14 @@ export async function proxy(request: NextRequest) {
 
 export const config = {
   matcher: [
-    // Everything except static assets and image optimisation.
-    "/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico)$).*)",
+    // Everything except static assets, image optimisation, and the PWA
+    // files (manifest.webmanifest, sw.js) — a browser fetches those
+    // unauthenticated to decide installability and to register the worker,
+    // so redirecting them to /login breaks both: the manifest fetch gets an
+    // HTML login page instead of JSON (installability just silently fails),
+    // and registering a service worker from a redirected non-JS response is
+    // rejected outright, not degraded. Caught by actually curling these
+    // routes, not by inspection — see the commit this fix shipped in.
+    "/((?!_next/static|_next/image|favicon.ico|manifest\\.webmanifest|sw\\.js|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico)$).*)",
   ],
 };
