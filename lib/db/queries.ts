@@ -233,3 +233,51 @@ export async function estimateTrailingCompanyProfit(
 
   return { incomePence, expensesPence };
 }
+
+/* Export-only reads — no UI page uses these tables directly yet, so they
+ * don't need a display-shaped join; the export just needs every column. */
+
+export async function listEngagementWindows() {
+  const supabase = await createServerSupabase();
+  const { data, error } = await supabase
+    .from("engagement_windows")
+    .select("id,project_id,starts_on,ends_on,days_committed,note")
+    .is("deleted_at", null)
+    .order("starts_on");
+  if (error) throw new Error(error.message);
+  return data ?? [];
+}
+
+export async function listInvoiceLineItems() {
+  const supabase = await createServerSupabase();
+  const { data, error } = await supabase
+    .from("invoice_line_items")
+    .select("id,invoice_id,description,quantity,unit_price_pence,vat_rate,position")
+    .is("deleted_at", null)
+    .order("invoice_id")
+    .order("position");
+  if (error) throw new Error(error.message);
+  return data ?? [];
+}
+
+export async function listTaxObligations() {
+  const supabase = await createServerSupabase();
+  const { data, error } = await supabase
+    .from("tax_obligations")
+    .select("id,kind,period_start,period_end,deadline,estimated_pence,status,notes")
+    .is("deleted_at", null)
+    .order("deadline");
+  if (error) throw new Error(error.message);
+  return data ?? [];
+}
+
+export async function listAllArtefactMetadata() {
+  const supabase = await createServerSupabase();
+  const { data, error } = await supabase
+    .from("work_artefacts")
+    .select("id,project_id,time_entry_id,kind,url,caption,captured_at")
+    .is("deleted_at", null)
+    .order("captured_at");
+  if (error) throw new Error(error.message);
+  return data ?? [];
+}

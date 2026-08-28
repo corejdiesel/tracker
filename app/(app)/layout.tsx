@@ -38,14 +38,26 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
           </Link>
         ))}
 
-        <form action={signOut} className="mt-auto px-2">
-          <button
-            type="submit"
+        <div className="mt-auto flex flex-col gap-2 px-2">
+          {/* A plain <a>, not next/link — this downloads a file, it doesn't
+              navigate to an app route, so it's outside typedRoutes' scope by
+              design. §8: "always available" is why this lives in persistent
+              nav rather than on one settings page that doesn't exist yet. */}
+          <a
+            href="/api/export"
             className="text-xs text-ink-faint transition-colors hover:text-ink"
           >
-            Sign out
-          </button>
-        </form>
+            Export your data
+          </a>
+          <form action={signOut}>
+            <button
+              type="submit"
+              className="text-xs text-ink-faint transition-colors hover:text-ink"
+            >
+              Sign out
+            </button>
+          </form>
+        </div>
       </nav>
 
       <main className="min-w-0 flex-1">{children}</main>
