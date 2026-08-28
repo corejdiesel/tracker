@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { CalendarDays, Clock, Coins, FileText, Home, Receipt, Users } from "lucide-react";
+import { CheckSquare, Contact, CalendarDays, Clock, Coins, FileText, Home, Receipt, ReceiptText, Users } from "lucide-react";
 import { signOut } from "@/app/(auth)/login/actions";
 
 const nav = [
@@ -7,9 +7,12 @@ const nav = [
   { href: "/timetable", label: "Timetable", icon: CalendarDays },
   { href: "/time", label: "Time", icon: Clock },
   { href: "/clients", label: "Clients", icon: Users },
+  { href: "/contacts", label: "Contacts", icon: Contact },
   { href: "/projects", label: "Projects", icon: FileText },
+  { href: "/tasks", label: "Tasks", icon: CheckSquare },
   { href: "/invoices", label: "Money in", icon: Receipt },
   { href: "/costs", label: "Money out", icon: Coins },
+  { href: "/expenses", label: "Expenses", icon: ReceiptText },
 ] as const;
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {

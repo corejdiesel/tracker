@@ -89,13 +89,19 @@ export interface RecurringCost {
   active: boolean;
 }
 
+export type TaskStatus = "open" | "doing" | "done" | "dropped";
+
 export interface Task {
   id: Uuid;
   project_id: Uuid | null;
   title: string;
   due_on: IsoDate | null;
-  status: "open" | "doing" | "done" | "dropped";
+  status: TaskStatus;
   source: RecordSource;
+}
+
+export interface TaskWithProject extends Task {
+  projects: Pick<Project, "name"> | null;
 }
 
 /** A project row with its client's name joined in, for list views. */
@@ -143,4 +149,38 @@ export interface WorkArtefact {
   caption: string | null;
   captured_at: string;
   byte_size: number | null;
+}
+
+export interface Expense {
+  id: Uuid;
+  spent_on: IsoDate;
+  vendor: string;
+  net_pence: PenceColumn;
+  vat_pence: PenceColumn;
+  gross_pence: PenceColumn;
+  category_slug: string;
+  entity: ExpenseEntity;
+  business_percent: number;
+  is_capital_asset: boolean;
+  disallowable: boolean;
+  project_id: Uuid | null;
+  recurring_cost_id: Uuid | null;
+  attachment_path: string | null;
+  source: RecordSource;
+}
+
+export interface ExpenseWithProject extends Expense {
+  projects: Pick<Project, "name"> | null;
+}
+
+export interface Contact {
+  id: Uuid;
+  client_id: Uuid | null;
+  name: string;
+  email: string | null;
+  role: string | null;
+}
+
+export interface ContactWithClient extends Contact {
+  clients: Pick<Client, "name"> | null;
 }

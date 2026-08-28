@@ -1,8 +1,8 @@
 import { createServerSupabase } from "@/lib/supabase/server";
 import { ARTEFACT_BUCKET } from "./constants";
 import type {
-  Client, InvoiceWithClient, ProjectWithClient, RecurringCost, RunningTimer,
-  Task, TimeEntryWithProject, WorkArtefact,
+  Client, ContactWithClient, ExpenseWithProject, InvoiceWithClient, ProjectWithClient,
+  RecurringCost, RunningTimer, Task, TaskWithProject, TimeEntryWithProject, WorkArtefact,
 } from "./types";
 
 
@@ -152,4 +152,47 @@ export async function signArtefacts(
     if (item.signedUrl && item.path) signed.set(item.path, item.signedUrl);
   }
   return signed;
+}
+
+export async function listExpenses(since?: string): Promise<ExpenseWithProject[]> {
+  const supabase = await createServerSupabase();
+  let query = supabase
+    .from("expenses")
+    .select(
+      "id,spent_on,vendor,net_pence,vat_pence,gross_pence,category_slug,entity,business_percent,is_capital_asset,disallowable,project_id,recurring_cost_id,attachment_path,source,projects(name)"
+    )
+    .is("deleted_at", null);
+
+  if (since) query = query.gte("spent_on", since);
+
+  const { data, error } = await query.order("spent_on", { ascending: false });
+  if (error) throw new Error(error.message);
+  return (data ?? []) as unknown as ExpenseWithProject[];
+}
+
+export async function listContacts(): Promise<ContactWithClient[]> {
+  const supabase = await createServerSupabase();
+  const { data, error } = await supabase
+    .from("contacts")
+    .select("id,client_id,name,email,role,clients(name)")
+    .is("deleted_at", null)
+    .order("name");
+
+  if (error) throw new Error(error.message);
+  return (data ?? []) as unknown as ContactWithClient[];
+}
+
+/** Every open task, ordered by due date. Distinct from listOpenTasks (Today's
+ * dashboard reader) only in shape — this one joins the project for display. */
+export async function listAllTasks(): Promise<TaskWithProject[]> {
+  const supabase = await createServerSupabase();
+  const { data, error } = await supabase
+    .from("tasks")
+    .select("id,project_id,title,due_on,status,source,projects(name)")
+    .is("deleted_at", null)
+    .neq("status", "dropped")
+    .order("due_on", { nullsFirst: false });
+
+  if (error) throw new Error(error.message);
+  return (data ?? []) as unknown as TaskWithProject[];
 }

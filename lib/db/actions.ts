@@ -412,3 +412,126 @@ export async function addArtefactLink(_prev: FormState, formData: FormData): Pro
   revalidatePath("/time");
   return {};
 }
+
+/* Expenses ──────────────────────────────────────────────────────────────────*/
+
+const expenseInput = z.object({
+  spent_on: isoDate,
+  vendor: z.string().trim().min(1, "Who was it paid to?"),
+  net_pence: pounds,
+  vat_pence: optionalPounds,
+  category_slug: z.string().trim().min(1, "Pick a category."),
+  entity: z.enum(["company", "personal"]),
+  business_percent: z.coerce.number().int().min(1).max(100),
+  is_capital_asset: z.string().optional(),
+  disallowable: z.string().optional(),
+  project_id: z.string().optional(),
+});
+
+export async function createExpense(_prev: FormState, formData: FormData): Promise<FormState> {
+  try {
+    const input = expenseInput.parse(Object.fromEntries(formData));
+
+    const supabase = await createServerSupabase();
+    const { error } = await supabase.from("expenses").insert({
+      spent_on: input.spent_on,
+      vendor: input.vendor,
+      net_pence: input.net_pence.toString(),
+      vat_pence: (input.vat_pence ?? BigInt(0)).toString(),
+      category_slug: input.category_slug,
+      entity: input.entity,
+      business_percent: input.business_percent,
+      is_capital_asset: input.is_capital_asset === "on",
+      disallowable: input.disallowable === "on",
+      project_id: input.project_id || null,
+      source: "manual",
+      owner_id: await ownerId(),
+    });
+
+    if (error) throw new Error(error.message);
+  } catch (error) {
+    return fail(error);
+  }
+
+  revalidatePath("/expenses");
+  revalidatePath("/");
+  return {};
+}
+
+/* Contacts ──────────────────────────────────────────────────────────────────*/
+
+const contactInput = z.object({
+  name: z.string().trim().min(1, "Give the contact a name."),
+  client_id: z.string().optional(),
+  email: z.email("That doesn't look like an email address.").optional().or(z.literal("")),
+  role: z.string().trim().optional(),
+});
+
+export async function createContact(_prev: FormState, formData: FormData): Promise<FormState> {
+  try {
+    const input = contactInput.parse(Object.fromEntries(formData));
+
+    const supabase = await createServerSupabase();
+    const { error } = await supabase.from("contacts").insert({
+      name: input.name,
+      client_id: input.client_id || null,
+      email: input.email || null,
+      role: input.role || null,
+      owner_id: await ownerId(),
+    });
+
+    if (error) throw new Error(error.message);
+  } catch (error) {
+    return fail(error);
+  }
+
+  revalidatePath("/contacts");
+  return {};
+}
+
+/* Tasks ─────────────────────────────────────────────────────────────────────*/
+
+const taskInput = z.object({
+  project_id: z.uuid("Pick a project."),
+  title: z.string().trim().min(1, "Give the task a title."),
+  due_on: z.string().transform((v) => (v.trim() === "" ? null : v)),
+});
+
+export async function createTask(_prev: FormState, formData: FormData): Promise<FormState> {
+  try {
+    const input = taskInput.parse(Object.fromEntries(formData));
+    if (input.due_on && !isIsoDate(input.due_on)) throw new Error("Due date isn't valid.");
+
+    const supabase = await createServerSupabase();
+    const { error } = await supabase.from("tasks").insert({
+      project_id: input.project_id,
+      title: input.title,
+      due_on: input.due_on,
+      status: "open",
+      source: "manual",
+      owner_id: await ownerId(),
+    });
+
+    if (error) throw new Error(error.message);
+  } catch (error) {
+    return fail(error);
+  }
+
+  revalidatePath("/tasks");
+  revalidatePath("/");
+  return {};
+}
+
+/** Cycles open → doing → done. A separate explicit action drops a task rather
+ * than folding it into the cycle, so it never gets there by accident. */
+export async function advanceTask(taskId: string): Promise<void> {
+  const supabase = await createServerSupabase();
+  const { data } = await supabase.from("tasks").select("status").eq("id", taskId).single();
+  if (!data) return;
+
+  const next = data.status === "open" ? "doing" : data.status === "doing" ? "done" : "open";
+  await supabase.from("tasks").update({ status: next }).eq("id", taskId);
+
+  revalidatePath("/tasks");
+  revalidatePath("/");
+}

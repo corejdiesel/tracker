@@ -12,9 +12,12 @@ export const APP_ROUTES = [
   "/timetable",
   "/time",
   "/clients",
+  "/contacts",
   "/projects",
   "/invoices",
   "/costs",
+  "/expenses",
+  "/tasks",
 ] as const;
 
 export type AppRoute = (typeof APP_ROUTES)[number];
