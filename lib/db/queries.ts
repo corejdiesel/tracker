@@ -1,5 +1,6 @@
 import { createServerSupabase } from "@/lib/supabase/server";
 import { ARTEFACT_BUCKET } from "./constants";
+import { sumPence, toPence } from "@/lib/money";
 import type {
   Client, ContactWithClient, ExpenseWithProject, InvoiceWithClient, ProjectWithClient,
   RecurringCost, RunningTimer, Task, TaskWithProject, TimeEntryWithProject, WorkArtefact,
@@ -195,4 +196,40 @@ export async function listAllTasks(): Promise<TaskWithProject[]> {
 
   if (error) throw new Error(error.message);
   return (data ?? []) as unknown as TaskWithProject[];
+}
+
+/**
+ * A rough starting point for the Tax calculator — trailing-12-month company
+ * income (invoiced net) minus company expenses (net). This is NOT an
+ * accounting profit figure: it ignores cost of sales timing, prior-period
+ * adjustments and anything not yet entered. The Tax page must present it as
+ * an editable default, never as a computed fact.
+ */
+export async function estimateTrailingCompanyProfit(
+  since: string
+): Promise<{ incomePence: bigint; expensesPence: bigint }> {
+  const supabase = await createServerSupabase();
+
+  const [invoicesResult, expensesResult] = await Promise.all([
+    supabase
+      .from("invoices")
+      .select("subtotal_pence")
+      .is("deleted_at", null)
+      .neq("status", "draft")
+      .gte("issue_date", since),
+    supabase
+      .from("expenses")
+      .select("net_pence")
+      .is("deleted_at", null)
+      .eq("entity", "company")
+      .gte("spent_on", since),
+  ]);
+
+  if (invoicesResult.error) throw new Error(invoicesResult.error.message);
+  if (expensesResult.error) throw new Error(expensesResult.error.message);
+
+  const incomePence = sumPence((invoicesResult.data ?? []).map((r) => toPence(r.subtotal_pence)));
+  const expensesPence = sumPence((expensesResult.data ?? []).map((r) => toPence(r.net_pence)));
+
+  return { incomePence, expensesPence };
 }

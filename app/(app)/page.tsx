@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { Button } from "@/components/ui/primitives";
 import { Badge, Card, CardHeader, EmptyState, Money } from "@/components/ui/primitives";
 import { PageBody, PageHeader } from "@/components/ui/page";
 import { addDays, formatDate, formatDateShort, relativeDays, todayIso } from "@/lib/dates";
@@ -64,19 +65,23 @@ export default async function TodayPage() {
           />
         </div>
 
-        {/* §8: never invent a tax number. Safe-to-spend needs a liability
-            estimate, and no tax module exists yet — so say exactly that
-            rather than showing a figure that looks authoritative. */}
+        {/* §8: never invent a tax number. A tax module exists now, but it
+            needs a profit and a dividend figure you choose — Today will not
+            silently guess those and present the result as fact. */}
         <Card>
           <CardHeader title="Safe to spend" />
-          <div className="flex flex-col gap-2 px-4 py-5">
-            <p className="font-display text-3xl leading-none text-ink-faint">Not yet computable</p>
+          <div className="flex flex-col gap-3 px-4 py-5">
+            <p className="font-display text-3xl leading-none text-ink-faint">Not yet computable here</p>
             <p className="max-w-prose text-sm text-ink-muted">
               This figure is cash in the account, minus tax set aside, minus committed costs.
-              Two of the three inputs exist: {formatMoney(burn)} of monthly committed costs, and{" "}
-              {formatMoney(owed)} owed to you. The tax liability is missing — no tax module is
-              wired up yet, and the app will not estimate what it cannot compute.
+              Two of the three inputs are on this page: {formatMoney(burn)} of monthly committed
+              costs, and {formatMoney(owed)} owed to you. The tax liability depends on a profit
+              and dividend figure only you can set — model it on the Tax page and this will use
+              it.
             </p>
+            <Link href="/tax" className="self-start">
+              <Button variant="ghost">Model your tax on the Tax page</Button>
+            </Link>
           </div>
         </Card>
 
