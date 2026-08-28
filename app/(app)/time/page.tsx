@@ -8,7 +8,6 @@ import { logTime } from "@/lib/db/actions";
 import {
   getRunningTimer, listArtefacts, listProjects, listTimeEntries, signArtefacts,
 } from "@/lib/db/queries";
-import { getUser } from "@/lib/supabase/server";
 import {
   compareToQuoted, effectiveRate, formatDuration, minutesByProject, totalMinutes,
 } from "@/lib/db/time";
@@ -22,8 +21,7 @@ export default async function TimePage() {
   const today = todayIso();
   const since = addDays(today, -28);
 
-  const [user, timer, projects, entries, artefacts] = await Promise.all([
-    getUser(),
+  const [timer, projects, entries, artefacts] = await Promise.all([
     getRunningTimer(),
     listProjects(),
     listTimeEntries(since),
@@ -134,7 +132,7 @@ export default async function TimePage() {
         <Card>
           <CardHeader title="Add to the log" />
           <div className="px-4 py-4">
-            {user ? <ArtefactUpload projects={projects} ownerId={user.id} /> : null}
+            <ArtefactUpload projects={projects} />
           </div>
         </Card>
 

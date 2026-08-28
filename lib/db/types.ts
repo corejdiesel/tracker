@@ -1,14 +1,12 @@
 /**
  * Row types for the Phase 1 schema.
  *
- * Hand-written for now. Once a Supabase project exists these should be
- * replaced by `supabase gen types typescript` output so the types track the
- * migrations automatically — until then, this file and
- * `supabase/migrations/0001_initial_schema.sql` must be kept in step by hand.
+ * Hand-written — kept in step by hand with `db/migrations/*.sql`, since
+ * there's no codegen step against Neon wired up.
  *
- * Money columns are `bigint` in Postgres. PostgREST serialises them as JSON
- * numbers, so they arrive as `number` and every read goes through `toPence()`
- * before any arithmetic.
+ * Money columns are `bigint` in Postgres. The Neon HTTP driver serialises
+ * them as JSON numbers, so they arrive as `number` and every read goes
+ * through `toPence()` before any arithmetic.
  */
 
 export type Uuid = string;

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { WORKING_DAYS_PER_WEEK, capacityByWeek, weekStart } from "./capacity";
+import { WORKING_DAYS_PER_WEEK, capacityByWeek, weekStart, weeksOfRunway } from "./capacity";
 import type { EngagementWindow } from "./types";
 
 const win = (over: Partial<EngagementWindow>): EngagementWindow => ({
@@ -93,5 +93,48 @@ describe("capacityByWeek", () => {
       1
     );
     expect(weeks[0]!.committed).toBe(0);
+  });
+});
+
+describe("weeksOfRunway", () => {
+  it("is zero with no engagement windows at all", () => {
+    expect(weeksOfRunway([], "2026-08-26")).toBe(0);
+  });
+
+  it("is zero when every window has already finished", () => {
+    const windows = [win({ ends_on: "2026-08-01" })];
+    expect(weeksOfRunway(windows, "2026-08-26")).toBe(0);
+  });
+
+  it("counts whole weeks to the latest still-open window's end date", () => {
+    // 26 Aug -> 30 Sep is 35 days = 5 whole weeks.
+    const windows = [win({ starts_on: "2026-08-24", ends_on: "2026-09-30" })];
+    expect(weeksOfRunway(windows, "2026-08-26")).toBe(5);
+  });
+
+  it("uses the LATEST end date across multiple windows, not the first found", () => {
+    const windows = [
+      win({ id: "1", ends_on: "2026-09-02" }),  // 1 week out
+      win({ id: "2", ends_on: "2026-10-21" }),  // 8 weeks out
+      win({ id: "3", ends_on: "2026-09-16" }),  // 3 weeks out
+    ];
+    expect(weeksOfRunway(windows, "2026-08-26")).toBe(8);
+  });
+
+  it("does not count total booked days across a gap — only the furthest end date matters", () => {
+    // Two 5-day windows, but the second starts long after the first ends —
+    // total committed days is only 10, but work exists (with a gap) all the
+    // way out to the second window's end date.
+    const windows = [
+      win({ id: "1", starts_on: "2026-08-24", ends_on: "2026-08-28", days_committed: 5 }),
+      win({ id: "2", starts_on: "2026-11-02", ends_on: "2026-11-06", days_committed: 5 }),
+    ];
+    // 26 Aug -> 6 Nov is 72 days = 10 whole weeks, not 10/5=2 "weeks of work".
+    expect(weeksOfRunway(windows, "2026-08-26")).toBe(10);
+  });
+
+  it("ignores a window that ends exactly today as still current, not expired", () => {
+    const windows = [win({ ends_on: "2026-08-26" })];
+    expect(weeksOfRunway(windows, "2026-08-26")).toBe(0);
   });
 });

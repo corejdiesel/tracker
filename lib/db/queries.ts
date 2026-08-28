@@ -1,5 +1,5 @@
-import { createServerSupabase } from "@/lib/supabase/server";
-import { ARTEFACT_BUCKET } from "./constants";
+import { getSessionUserId } from "@/lib/auth/session";
+import { withUser } from "./client";
 import { sumPence, toPence } from "@/lib/money";
 import type {
   Client, ContactWithClient, EmailThread, ExpenseWithProject, InvoiceWithClient,
@@ -7,196 +7,202 @@ import type {
   TimeEntryWithProject, WorkArtefact,
 } from "./types";
 
-
 /**
  * Every query filters `deleted_at is null` — nothing is hard-deleted, so a
- * missing filter silently resurrects records. RLS scopes rows to the signed-in
- * user in Postgres; the filters here are about correctness, not access.
+ * missing filter silently resurrects records. Postgres RLS (FORCE ROW LEVEL
+ * SECURITY, keyed on the session's app.user_id — see lib/db/client.ts)
+ * scopes rows to the signed-in user; the filters here are about
+ * correctness, not access. `db()` below is what actually establishes that
+ * session context for every query in this file.
  */
 
-export async function listClients(): Promise<Client[]> {
-  const supabase = await createServerSupabase();
-  const { data, error } = await supabase
-    .from("clients")
-    .select("id,name,company_number,vat_number,default_day_rate_pence,payment_terms_days,vat_treatment,notes")
-    .is("deleted_at", null)
-    .order("name");
+async function db() {
+  const userId = await getSessionUserId();
+  if (!userId) throw new Error("Not signed in.");
+  return withUser(userId);
+}
 
-  if (error) throw new Error(error.message);
-  return data ?? [];
+export async function listClients(): Promise<Client[]> {
+  const conn = await db();
+  return conn.query<Client>(
+    `select id, name, company_number, vat_number, default_day_rate_pence,
+            payment_terms_days, vat_treatment, notes
+       from public.clients
+      where deleted_at is null
+      order by name`
+  );
 }
 
 export async function listProjects(): Promise<ProjectWithClient[]> {
-  const supabase = await createServerSupabase();
-  const { data, error } = await supabase
-    .from("projects")
-    .select(
-      "id,client_id,name,status,fee_structure,fee_pence,day_rate_pence,estimated_days,probability,starts_on,ends_on,clients(name)"
-    )
-    .is("deleted_at", null)
-    .order("starts_on", { ascending: false, nullsFirst: false });
-
-  if (error) throw new Error(error.message);
-  return (data ?? []) as unknown as ProjectWithClient[];
+  const conn = await db();
+  const rows = await conn.query<Record<string, unknown>>(
+    `select p.id, p.client_id, p.name, p.status, p.fee_structure, p.fee_pence,
+            p.day_rate_pence, p.estimated_days, p.probability, p.starts_on, p.ends_on,
+            c.name as client_name
+       from public.projects p
+       left join public.clients c on c.id = p.client_id
+      where p.deleted_at is null
+      order by p.starts_on desc nulls last`
+  );
+  return rows.map((r) => ({
+    ...r,
+    clients: r.client_name !== null ? { name: r.client_name } : null,
+  })) as unknown as ProjectWithClient[];
 }
 
 export async function listInvoices(): Promise<InvoiceWithClient[]> {
-  const supabase = await createServerSupabase();
-  const { data, error } = await supabase
-    .from("invoices")
-    .select(
-      "id,client_id,project_id,number,issue_date,due_date,subtotal_pence,vat_pence,total_pence,status,paid_on,clients(name)"
-    )
-    .is("deleted_at", null)
-    .order("due_date");
-
-  if (error) throw new Error(error.message);
-  return (data ?? []) as unknown as InvoiceWithClient[];
+  const conn = await db();
+  const rows = await conn.query<Record<string, unknown>>(
+    `select i.id, i.client_id, i.project_id, i.number, i.issue_date, i.due_date,
+            i.subtotal_pence, i.vat_pence, i.total_pence, i.status, i.paid_on,
+            c.name as client_name
+       from public.invoices i
+       left join public.clients c on c.id = i.client_id
+      where i.deleted_at is null
+      order by i.due_date`
+  );
+  return rows.map((r) => ({
+    ...r,
+    clients: r.client_name !== null ? { name: r.client_name } : null,
+  })) as unknown as InvoiceWithClient[];
 }
 
 export async function listRecurringCosts(): Promise<RecurringCost[]> {
-  const supabase = await createServerSupabase();
-  const { data, error } = await supabase
-    .from("recurring_costs")
-    .select(
-      "id,vendor,amount_pence,cadence,next_charge_on,category_slug,cancel_by,dependency,last_reviewed_on,active"
-    )
-    .is("deleted_at", null)
-    .order("next_charge_on");
-
-  if (error) throw new Error(error.message);
-  return data ?? [];
+  const conn = await db();
+  return conn.query<RecurringCost>(
+    `select id, vendor, amount_pence, cadence, next_charge_on, category_slug,
+            cancel_by, dependency, last_reviewed_on, active
+       from public.recurring_costs
+      where deleted_at is null
+      order by next_charge_on`
+  );
 }
 
 export async function listOpenTasks(): Promise<Task[]> {
-  const supabase = await createServerSupabase();
-  const { data, error } = await supabase
-    .from("tasks")
-    .select("id,project_id,title,due_on,status,source")
-    .is("deleted_at", null)
-    .in("status", ["open", "doing"])
-    .order("due_on", { nullsFirst: false });
-
-  if (error) throw new Error(error.message);
-  return data ?? [];
+  const conn = await db();
+  return conn.query<Task>(
+    `select id, project_id, title, due_on, status, source
+       from public.tasks
+      where deleted_at is null and status in ('open','doing')
+      order by due_on nulls last`
+  );
 }
 
 /* Time and the session log ─────────────────────────────────────────────────*/
 
 export async function listTimeEntries(since?: string): Promise<TimeEntryWithProject[]> {
-  const supabase = await createServerSupabase();
-  let query = supabase
-    .from("time_entries")
-    .select("id,project_id,task_id,worked_on,minutes,note,billable,source,projects(name,clients(name))")
-    .is("deleted_at", null);
-
-  if (since) query = query.gte("worked_on", since);
-
-  const { data, error } = await query
-    .order("worked_on", { ascending: false })
-    .order("created_at", { ascending: false });
-
-  if (error) throw new Error(error.message);
-  return (data ?? []) as unknown as TimeEntryWithProject[];
+  const conn = await db();
+  const rows = await conn.query<Record<string, unknown>>(
+    `select t.id, t.project_id, t.task_id, t.worked_on, t.minutes, t.note,
+            t.billable, t.source, p.name as project_name, c.name as client_name
+       from public.time_entries t
+       left join public.projects p on p.id = t.project_id
+       left join public.clients c on c.id = p.client_id
+      where t.deleted_at is null
+        and ($1::date is null or t.worked_on >= $1::date)
+      order by t.worked_on desc, t.created_at desc`,
+    [since ?? null]
+  );
+  return rows.map((r) => ({
+    ...r,
+    projects:
+      r.project_name !== null
+        ? { name: r.project_name, clients: r.client_name !== null ? { name: r.client_name } : null }
+        : null,
+  })) as unknown as TimeEntryWithProject[];
 }
 
 export async function getRunningTimer(): Promise<RunningTimer | null> {
-  const supabase = await createServerSupabase();
+  const conn = await db();
   // At most one row exists per user — owner_id is the primary key.
-  const { data, error } = await supabase
-    .from("running_timers")
-    .select("owner_id,project_id,task_id,started_at,note")
-    .maybeSingle();
-
-  if (error) throw new Error(error.message);
-  return data;
+  const rows = await conn.query<RunningTimer>(
+    `select owner_id, project_id, task_id, started_at, note from public.running_timers`
+  );
+  return rows[0] ?? null;
 }
 
 export async function listArtefacts(limit = 60): Promise<WorkArtefact[]> {
-  const supabase = await createServerSupabase();
-  const { data, error } = await supabase
-    .from("work_artefacts")
-    .select("id,project_id,time_entry_id,kind,storage_path,url,caption,captured_at,byte_size")
-    .is("deleted_at", null)
-    .order("captured_at", { ascending: false })
-    .limit(limit);
-
-  if (error) throw new Error(error.message);
-  return data ?? [];
+  const conn = await db();
+  return conn.query<WorkArtefact>(
+    `select id, project_id, time_entry_id, kind, storage_path, url, caption,
+            captured_at, byte_size
+       from public.work_artefacts
+      where deleted_at is null
+      order by captured_at desc
+      limit $1`,
+    [limit]
+  );
 }
 
 /**
- * Short-lived signed URLs for stored artefacts. The bucket is private, so
- * nothing renders without one — and the URLs expire rather than becoming a
- * durable public link to client work.
+ * Short-lived signed URLs for stored artefacts.
+ *
+ * DEFERRED: this always returns an empty map. Supabase Storage's private
+ * bucket + signed-URL model doesn't have a Neon equivalent — Neon has no
+ * file storage at all — and picking a replacement (Cloudflare R2, S3,
+ * Vercel Blob) is a real decision, not a default to guess at mid-migration.
+ * Existing storage_path values from before this migration are orphaned:
+ * the rows and captions still show, but the images themselves are
+ * unreachable until this is wired to something. See the Notion action list.
  */
 export async function signArtefacts(
-  artefacts: readonly WorkArtefact[],
-  expiresInSeconds = 300
+  _artefacts: readonly WorkArtefact[],
+  _expiresInSeconds = 300
 ): Promise<Map<string, string>> {
-  const paths = artefacts
-    .map((a) => a.storage_path)
-    .filter((path): path is string => path !== null);
-
-  if (paths.length === 0) return new Map();
-
-  const supabase = await createServerSupabase();
-  const { data, error } = await supabase.storage
-    .from(ARTEFACT_BUCKET)
-    .createSignedUrls(paths, expiresInSeconds);
-
-  // A missing thumbnail should not take down the page — the UI falls back to
-  // a caption-only tile.
-  if (error || !data) return new Map();
-
-  const signed = new Map<string, string>();
-  for (const item of data) {
-    if (item.signedUrl && item.path) signed.set(item.path, item.signedUrl);
-  }
-  return signed;
+  return new Map();
 }
 
 export async function listExpenses(since?: string): Promise<ExpenseWithProject[]> {
-  const supabase = await createServerSupabase();
-  let query = supabase
-    .from("expenses")
-    .select(
-      "id,spent_on,vendor,net_pence,vat_pence,gross_pence,category_slug,entity,business_percent,is_capital_asset,disallowable,project_id,recurring_cost_id,attachment_path,source,projects(name)"
-    )
-    .is("deleted_at", null);
-
-  if (since) query = query.gte("spent_on", since);
-
-  const { data, error } = await query.order("spent_on", { ascending: false });
-  if (error) throw new Error(error.message);
-  return (data ?? []) as unknown as ExpenseWithProject[];
+  const conn = await db();
+  const rows = await conn.query<Record<string, unknown>>(
+    `select e.id, e.spent_on, e.vendor, e.net_pence, e.vat_pence, e.gross_pence,
+            e.category_slug, e.entity, e.business_percent, e.is_capital_asset,
+            e.disallowable, e.project_id, e.recurring_cost_id, e.attachment_path,
+            e.source, p.name as project_name
+       from public.expenses e
+       left join public.projects p on p.id = e.project_id
+      where e.deleted_at is null
+        and ($1::date is null or e.spent_on >= $1::date)
+      order by e.spent_on desc`,
+    [since ?? null]
+  );
+  return rows.map((r) => ({
+    ...r,
+    projects: r.project_name !== null ? { name: r.project_name } : null,
+  })) as unknown as ExpenseWithProject[];
 }
 
 export async function listContacts(): Promise<ContactWithClient[]> {
-  const supabase = await createServerSupabase();
-  const { data, error } = await supabase
-    .from("contacts")
-    .select("id,client_id,name,email,role,clients(name)")
-    .is("deleted_at", null)
-    .order("name");
-
-  if (error) throw new Error(error.message);
-  return (data ?? []) as unknown as ContactWithClient[];
+  const conn = await db();
+  const rows = await conn.query<Record<string, unknown>>(
+    `select ct.id, ct.client_id, ct.name, ct.email, ct.role, c.name as client_name
+       from public.contacts ct
+       left join public.clients c on c.id = ct.client_id
+      where ct.deleted_at is null
+      order by ct.name`
+  );
+  return rows.map((r) => ({
+    ...r,
+    clients: r.client_name !== null ? { name: r.client_name } : null,
+  })) as unknown as ContactWithClient[];
 }
 
 /** Every open task, ordered by due date. Distinct from listOpenTasks (Today's
  * dashboard reader) only in shape — this one joins the project for display. */
 export async function listAllTasks(): Promise<TaskWithProject[]> {
-  const supabase = await createServerSupabase();
-  const { data, error } = await supabase
-    .from("tasks")
-    .select("id,project_id,title,due_on,status,source,projects(name)")
-    .is("deleted_at", null)
-    .neq("status", "dropped")
-    .order("due_on", { nullsFirst: false });
-
-  if (error) throw new Error(error.message);
-  return (data ?? []) as unknown as TaskWithProject[];
+  const conn = await db();
+  const rows = await conn.query<Record<string, unknown>>(
+    `select t.id, t.project_id, t.title, t.due_on, t.status, t.source,
+            p.name as project_name
+       from public.tasks t
+       left join public.projects p on p.id = t.project_id
+      where t.deleted_at is null and t.status <> 'dropped'
+      order by t.due_on nulls last`
+  );
+  return rows.map((r) => ({
+    ...r,
+    projects: r.project_name !== null ? { name: r.project_name } : null,
+  })) as unknown as TaskWithProject[];
 }
 
 /**
@@ -209,91 +215,95 @@ export async function listAllTasks(): Promise<TaskWithProject[]> {
 export async function estimateTrailingCompanyProfit(
   since: string
 ): Promise<{ incomePence: bigint; expensesPence: bigint }> {
-  const supabase = await createServerSupabase();
-
-  const [invoicesResult, expensesResult] = await Promise.all([
-    supabase
-      .from("invoices")
-      .select("subtotal_pence")
-      .is("deleted_at", null)
-      .neq("status", "draft")
-      .gte("issue_date", since),
-    supabase
-      .from("expenses")
-      .select("net_pence")
-      .is("deleted_at", null)
-      .eq("entity", "company")
-      .gte("spent_on", since),
+  const conn = await db();
+  const [invoiceRows, expenseRows] = await Promise.all([
+    conn.query<{ subtotal_pence: number }>(
+      `select subtotal_pence from public.invoices
+        where deleted_at is null and status <> 'draft' and issue_date >= $1::date`,
+      [since]
+    ),
+    conn.query<{ net_pence: number }>(
+      `select net_pence from public.expenses
+        where deleted_at is null and entity = 'company' and spent_on >= $1::date`,
+      [since]
+    ),
   ]);
 
-  if (invoicesResult.error) throw new Error(invoicesResult.error.message);
-  if (expensesResult.error) throw new Error(expensesResult.error.message);
-
-  const incomePence = sumPence((invoicesResult.data ?? []).map((r) => toPence(r.subtotal_pence)));
-  const expensesPence = sumPence((expensesResult.data ?? []).map((r) => toPence(r.net_pence)));
-
-  return { incomePence, expensesPence };
+  return {
+    incomePence: sumPence(invoiceRows.map((r) => toPence(r.subtotal_pence))),
+    expensesPence: sumPence(expenseRows.map((r) => toPence(r.net_pence))),
+  };
 }
 
 /* Export-only reads — no UI page uses these tables directly yet, so they
  * don't need a display-shaped join; the export just needs every column. */
 
-export async function listEngagementWindows() {
-  const supabase = await createServerSupabase();
-  const { data, error } = await supabase
-    .from("engagement_windows")
-    .select("id,project_id,starts_on,ends_on,days_committed,note")
-    .is("deleted_at", null)
-    .order("starts_on");
-  if (error) throw new Error(error.message);
-  return data ?? [];
+export async function listEngagementWindows(): Promise<import("./types").EngagementWindow[]> {
+  const conn = await db();
+  return conn.query(
+    `select id, project_id, starts_on, ends_on, days_committed, note
+       from public.engagement_windows
+      where deleted_at is null
+      order by starts_on`
+  );
+}
+
+/** Engagement windows overlapping [from, to] — what the Timetable page
+ * actually needs, distinct from listEngagementWindows' full-history read
+ * for the export. */
+export async function listUpcomingEngagementWindows(
+  from: string,
+  to: string
+): Promise<import("./types").EngagementWindow[]> {
+  const conn = await db();
+  return conn.query(
+    `select id, project_id, starts_on, ends_on, days_committed, note
+       from public.engagement_windows
+      where deleted_at is null and starts_on <= $2 and ends_on >= $1
+      order by starts_on`,
+    [from, to]
+  );
 }
 
 export async function listInvoiceLineItems() {
-  const supabase = await createServerSupabase();
-  const { data, error } = await supabase
-    .from("invoice_line_items")
-    .select("id,invoice_id,description,quantity,unit_price_pence,vat_rate,position")
-    .is("deleted_at", null)
-    .order("invoice_id")
-    .order("position");
-  if (error) throw new Error(error.message);
-  return data ?? [];
+  const conn = await db();
+  return conn.query(
+    `select id, invoice_id, description, quantity, unit_price_pence, vat_rate, position
+       from public.invoice_line_items
+      where deleted_at is null
+      order by invoice_id, position`
+  );
 }
 
 export async function listTaxObligations() {
-  const supabase = await createServerSupabase();
-  const { data, error } = await supabase
-    .from("tax_obligations")
-    .select("id,kind,period_start,period_end,deadline,estimated_pence,status,notes")
-    .is("deleted_at", null)
-    .order("deadline");
-  if (error) throw new Error(error.message);
-  return data ?? [];
+  const conn = await db();
+  return conn.query(
+    `select id, kind, period_start, period_end, deadline, estimated_pence, status, notes
+       from public.tax_obligations
+      where deleted_at is null
+      order by deadline`
+  );
 }
 
 export async function listAllArtefactMetadata() {
-  const supabase = await createServerSupabase();
-  const { data, error } = await supabase
-    .from("work_artefacts")
-    .select("id,project_id,time_entry_id,kind,url,caption,captured_at")
-    .is("deleted_at", null)
-    .order("captured_at");
-  if (error) throw new Error(error.message);
-  return data ?? [];
+  const conn = await db();
+  return conn.query(
+    `select id, project_id, time_entry_id, kind, url, caption, captured_at
+       from public.work_artefacts
+      where deleted_at is null
+      order by captured_at`
+  );
 }
 
 /* Mail triage ────────────────────────────────────────────────────────────*/
 
 export async function listUnmatchedThreads(): Promise<EmailThread[]> {
-  const supabase = await createServerSupabase();
-  const { data, error } = await supabase
-    .from("email_threads")
-    .select("id,external_id,client_id,project_id,subject,from_name,from_address,snippet,kind,matched_by,received_at")
-    .is("deleted_at", null)
-    .eq("matched_by", "unmatched")
-    .order("received_at", { ascending: false });
-
-  if (error) throw new Error(error.message);
-  return data ?? [];
+  const conn = await db();
+  return conn.query<EmailThread>(
+    `select id, external_id, client_id, project_id, subject, from_name,
+            from_address, snippet, kind, matched_by, received_at
+       from public.email_threads
+      where deleted_at is null and matched_by = 'unmatched'
+      order by received_at desc`
+  );
 }

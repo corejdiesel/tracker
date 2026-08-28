@@ -2,7 +2,8 @@
 
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
-import { createServerSupabase } from "@/lib/supabase/server";
+import { getSessionUserId } from "@/lib/auth/session";
+import { withUser } from "./client";
 import { parsePounds } from "@/lib/money";
 import { isIsoDate } from "@/lib/dates";
 import { elapsedMinutes } from "./time";
@@ -41,12 +42,20 @@ function fail(error: unknown): FormState {
   return { error: error instanceof Error ? error.message : "Something went wrong." };
 }
 
-/** The signed-in user's id, or a thrown error. Every insert needs it. */
-async function ownerId(): Promise<string> {
-  const supabase = await createServerSupabase();
-  const { data } = await supabase.auth.getUser();
-  if (!data.user) throw new Error("You're signed out. Sign in and try again.");
-  return data.user.id;
+/** A unique-violation from Postgres (`23505`) — the Neon driver's thrown
+ * error carries the standard Postgres error `code`, confirmed against a
+ * real duplicate-key failure while verifying the schema against a live
+ * database, not assumed. */
+function isUniqueViolation(error: unknown): boolean {
+  return typeof error === "object" && error !== null && (error as { code?: string }).code === "23505";
+}
+
+/** The signed-in user's id, and a scoped query connection for them — every
+ * write needs both. Throws if signed out, same as the queries module. */
+async function db() {
+  const userId = await getSessionUserId();
+  if (!userId) throw new Error("You're signed out. Sign in and try again.");
+  return withUser(userId);
 }
 
 /* Clients ──────────────────────────────────────────────────────────────────*/
@@ -71,16 +80,23 @@ export async function createClient(_prev: FormState, formData: FormData): Promis
       vat_number: formData.get("vat_number"),
     });
 
-    const supabase = await createServerSupabase();
-    const { error } = await supabase.from("clients").insert({
-      ...input,
-      // bigint columns take a string so a large value never round-trips
-      // through a lossy JS number.
-      default_day_rate_pence: input.default_day_rate_pence?.toString() ?? null,
-      owner_id: await ownerId(),
-    });
-
-    if (error) throw new Error(error.message);
+    const conn = await db();
+    await conn.query(
+      `insert into public.clients
+         (owner_id, name, payment_terms_days, vat_treatment, default_day_rate_pence,
+          company_number, vat_number)
+       values ((select public.app_user_id()), $1, $2, $3, $4, $5, $6)`,
+      [
+        input.name,
+        input.payment_terms_days,
+        input.vat_treatment,
+        // bigint columns take a string so a large value never round-trips
+        // through a lossy JS number.
+        input.default_day_rate_pence?.toString() ?? null,
+        input.company_number,
+        input.vat_number,
+      ]
+    );
   } catch (error) {
     return fail(error);
   }
@@ -113,14 +129,18 @@ export async function createProject(_prev: FormState, formData: FormData): Promi
       throw new Error("The project can't end before it starts.");
     }
 
-    const supabase = await createServerSupabase();
-    const { error } = await supabase.from("projects").insert({
-      ...input,
-      fee_pence: input.fee_pence?.toString() ?? null,
-      owner_id: await ownerId(),
-    });
-
-    if (error) throw new Error(error.message);
+    const conn = await db();
+    await conn.query(
+      `insert into public.projects
+         (owner_id, client_id, name, status, fee_structure, fee_pence,
+          estimated_days, probability, starts_on, ends_on)
+       values ((select public.app_user_id()), $1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+      [
+        input.client_id, input.name, input.status, input.fee_structure,
+        input.fee_pence?.toString() ?? null, input.estimated_days, input.probability,
+        input.starts_on, input.ends_on,
+      ]
+    );
   } catch (error) {
     return fail(error);
   }
@@ -154,27 +174,20 @@ export async function createInvoice(_prev: FormState, formData: FormData): Promi
       throw new Error("Create the invoice first, then mark it paid — that records the date.");
     }
 
-    const supabase = await createServerSupabase();
-    const { error } = await supabase.from("invoices").insert({
-      client_id: input.client_id,
-      number: input.number,
-      issue_date: input.issue_date,
-      due_date: input.due_date,
-      subtotal_pence: input.subtotal_pence.toString(),
-      vat_pence: (input.vat_pence ?? BigInt(0)).toString(),
-      status: input.status,
-      owner_id: await ownerId(),
-    });
-
-    if (error) {
-      throw new Error(
-        error.code === "23505"
-          ? `You already have an invoice numbered ${input.number}.`
-          : error.message
-      );
-    }
+    const conn = await db();
+    await conn.query(
+      `insert into public.invoices
+         (owner_id, client_id, number, issue_date, due_date, subtotal_pence, vat_pence, status)
+       values ((select public.app_user_id()), $1, $2, $3, $4, $5, $6, $7)`,
+      [
+        input.client_id, input.number, input.issue_date, input.due_date,
+        input.subtotal_pence.toString(), (input.vat_pence ?? BigInt(0)).toString(), input.status,
+      ]
+    );
   } catch (error) {
-    return fail(error);
+    return fail(
+      isUniqueViolation(error) ? new Error(`You already have an invoice numbered ${JSON.stringify(formData.get("number"))}.`) : error
+    );
   }
 
   revalidatePath("/invoices");
@@ -201,14 +214,17 @@ export async function createRecurringCost(_prev: FormState, formData: FormData):
       throw new Error("Cancel-by isn't a valid date.");
     }
 
-    const supabase = await createServerSupabase();
-    const { error } = await supabase.from("recurring_costs").insert({
-      ...input,
-      amount_pence: input.amount_pence.toString(),
-      owner_id: await ownerId(),
-    });
-
-    if (error) throw new Error(error.message);
+    const conn = await db();
+    await conn.query(
+      `insert into public.recurring_costs
+         (owner_id, vendor, amount_pence, cadence, next_charge_on, category_slug,
+          cancel_by, dependency)
+       values ((select public.app_user_id()), $1, $2, $3, $4, $5, $6, $7)`,
+      [
+        input.vendor, input.amount_pence.toString(), input.cadence, input.next_charge_on,
+        input.category_slug, input.cancel_by, input.dependency,
+      ]
+    );
   } catch (error) {
     return fail(error);
   }
@@ -226,23 +242,19 @@ export async function startTimer(_prev: FormState, formData: FormData): Promise<
       .object({ project_id: z.uuid("Pick a project."), note: z.string().trim().optional() })
       .parse(Object.fromEntries(formData));
 
-    const supabase = await createServerSupabase();
-    const { error } = await supabase.from("running_timers").insert({
-      project_id: input.project_id,
-      note: input.note || null,
-      owner_id: await ownerId(),
-    });
-
-    if (error) {
-      // owner_id is the primary key, so a second start collides by design.
-      throw new Error(
-        error.code === "23505"
-          ? "A timer is already running. Stop it before starting another."
-          : error.message
-      );
-    }
+    const conn = await db();
+    await conn.query(
+      `insert into public.running_timers (owner_id, project_id, note)
+       values ((select public.app_user_id()), $1, $2)`,
+      [input.project_id, input.note || null]
+    );
   } catch (error) {
-    return fail(error);
+    // owner_id is the primary key, so a second start collides by design.
+    return fail(
+      isUniqueViolation(error)
+        ? new Error("A timer is already running. Stop it before starting another.")
+        : error
+    );
   }
 
   revalidatePath("/time");
@@ -256,40 +268,44 @@ export async function startTimer(_prev: FormState, formData: FormData): Promise<
  * anyway and which is not a session worth keeping.
  */
 export async function stopTimer(): Promise<void> {
-  const supabase = await createServerSupabase();
-  const owner = await ownerId();
+  const conn = await db();
 
-  const { data: timer } = await supabase
-    .from("running_timers")
-    .select("project_id,task_id,started_at,note")
-    .maybeSingle();
-
+  const rows = await conn.query<{
+    project_id: string; task_id: string | null; started_at: string; note: string | null;
+  }>(`select project_id, task_id, started_at, note from public.running_timers`);
+  const timer = rows[0];
   if (!timer) return;
 
   const minutes = elapsedMinutes(timer.started_at);
 
-  if (minutes > 0) {
-    await supabase.from("time_entries").insert({
-      owner_id: owner,
-      project_id: timer.project_id,
-      task_id: timer.task_id,
-      // The day the session started, in the operator's own calendar.
-      worked_on: timer.started_at.slice(0, 10),
-      minutes: Math.min(minutes, 1440),
-      note: timer.note,
-      source: "timer",
-    });
-  }
-
-  await supabase.from("running_timers").delete().eq("owner_id", owner);
+  await conn.transaction((q) => {
+    const queries = [];
+    if (minutes > 0) {
+      queries.push(
+        q(
+          `insert into public.time_entries
+             (owner_id, project_id, task_id, worked_on, minutes, note, source)
+           values ((select public.app_user_id()), $1, $2, $3, $4, $5, 'timer')`,
+          [
+            timer.project_id, timer.task_id,
+            // The day the session started, in the operator's own calendar.
+            timer.started_at.slice(0, 10),
+            Math.min(minutes, 1440), timer.note,
+          ]
+        )
+      );
+    }
+    queries.push(q(`delete from public.running_timers where owner_id = (select public.app_user_id())`));
+    return queries;
+  });
 
   revalidatePath("/time");
   revalidatePath("/");
 }
 
 export async function discardTimer(): Promise<void> {
-  const supabase = await createServerSupabase();
-  await supabase.from("running_timers").delete().eq("owner_id", await ownerId());
+  const conn = await db();
+  await conn.query(`delete from public.running_timers where owner_id = (select public.app_user_id())`);
   revalidatePath("/time");
 }
 
@@ -310,19 +326,16 @@ export async function logTime(_prev: FormState, formData: FormData): Promise<For
     if (total <= 0) throw new Error("Log at least a minute.");
     if (total > 1440) throw new Error("That's more than a day.");
 
-    const supabase = await createServerSupabase();
-    const { error } = await supabase.from("time_entries").insert({
-      project_id: input.project_id,
-      worked_on: input.worked_on,
-      minutes: total,
-      note: input.note || null,
-      // An unchecked checkbox sends nothing at all.
-      billable: input.billable === "on",
-      source: "manual",
-      owner_id: await ownerId(),
-    });
-
-    if (error) throw new Error(error.message);
+    const conn = await db();
+    await conn.query(
+      `insert into public.time_entries (owner_id, project_id, worked_on, minutes, note, billable, source)
+       values ((select public.app_user_id()), $1, $2, $3, $4, $5, 'manual')`,
+      [
+        input.project_id, input.worked_on, total, input.note || null,
+        // An unchecked checkbox sends nothing at all.
+        input.billable === "on",
+      ]
+    );
   } catch (error) {
     return fail(error);
   }
@@ -336,8 +349,10 @@ export async function logTime(_prev: FormState, formData: FormData): Promise<For
 
 /**
  * Record an artefact after the browser has uploaded the file straight to
- * storage. The bytes never pass through a server action — a screenshot would
- * blow the action body limit and there is no reason to proxy it.
+ * storage. DEFERRED (see lib/db/queries.ts's signArtefacts): there is no
+ * Neon storage equivalent wired up yet, so nothing currently calls this
+ * with a real storagePath — kept correct against the schema for when a
+ * storage provider is chosen, rather than deleted.
  */
 export async function recordArtefact(input: {
   projectId: string;
@@ -357,26 +372,13 @@ export async function recordArtefact(input: {
       })
       .parse(input);
 
-    const owner = await ownerId();
-
-    // Storage RLS keys on the first path segment. Re-check it here so a
-    // tampered client cannot record a row pointing at someone else's object.
-    if (!parsed.storagePath.startsWith(`${owner}/`)) {
-      throw new Error("That file doesn't belong to this account.");
-    }
-
-    const supabase = await createServerSupabase();
-    const { error } = await supabase.from("work_artefacts").insert({
-      owner_id: owner,
-      project_id: parsed.projectId,
-      time_entry_id: parsed.timeEntryId ?? null,
-      kind: "screenshot",
-      storage_path: parsed.storagePath,
-      caption: parsed.caption || null,
-      byte_size: parsed.byteSize ?? null,
-    });
-
-    if (error) throw new Error(error.message);
+    const conn = await db();
+    await conn.query(
+      `insert into public.work_artefacts
+         (owner_id, project_id, time_entry_id, kind, storage_path, caption, byte_size)
+       values ((select public.app_user_id()), $1, $2, 'screenshot', $3, $4, $5)`,
+      [parsed.projectId, parsed.timeEntryId ?? null, parsed.storagePath, parsed.caption || null, parsed.byteSize ?? null]
+    );
   } catch (error) {
     return fail(error);
   }
@@ -395,16 +397,12 @@ export async function addArtefactLink(_prev: FormState, formData: FormData): Pro
       })
       .parse(Object.fromEntries(formData));
 
-    const supabase = await createServerSupabase();
-    const { error } = await supabase.from("work_artefacts").insert({
-      owner_id: await ownerId(),
-      project_id: input.project_id,
-      kind: "link",
-      url: input.url,
-      caption: input.caption || null,
-    });
-
-    if (error) throw new Error(error.message);
+    const conn = await db();
+    await conn.query(
+      `insert into public.work_artefacts (owner_id, project_id, kind, url, caption)
+       values ((select public.app_user_id()), $1, 'link', $2, $3)`,
+      [input.project_id, input.url, input.caption || null]
+    );
   } catch (error) {
     return fail(error);
   }
@@ -432,23 +430,19 @@ export async function createExpense(_prev: FormState, formData: FormData): Promi
   try {
     const input = expenseInput.parse(Object.fromEntries(formData));
 
-    const supabase = await createServerSupabase();
-    const { error } = await supabase.from("expenses").insert({
-      spent_on: input.spent_on,
-      vendor: input.vendor,
-      net_pence: input.net_pence.toString(),
-      vat_pence: (input.vat_pence ?? BigInt(0)).toString(),
-      category_slug: input.category_slug,
-      entity: input.entity,
-      business_percent: input.business_percent,
-      is_capital_asset: input.is_capital_asset === "on",
-      disallowable: input.disallowable === "on",
-      project_id: input.project_id || null,
-      source: "manual",
-      owner_id: await ownerId(),
-    });
-
-    if (error) throw new Error(error.message);
+    const conn = await db();
+    await conn.query(
+      `insert into public.expenses
+         (owner_id, spent_on, vendor, net_pence, vat_pence, category_slug, entity,
+          business_percent, is_capital_asset, disallowable, project_id, source)
+       values ((select public.app_user_id()), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'manual')`,
+      [
+        input.spent_on, input.vendor, input.net_pence.toString(),
+        (input.vat_pence ?? BigInt(0)).toString(), input.category_slug, input.entity,
+        input.business_percent, input.is_capital_asset === "on", input.disallowable === "on",
+        input.project_id || null,
+      ]
+    );
   } catch (error) {
     return fail(error);
   }
@@ -471,16 +465,12 @@ export async function createContact(_prev: FormState, formData: FormData): Promi
   try {
     const input = contactInput.parse(Object.fromEntries(formData));
 
-    const supabase = await createServerSupabase();
-    const { error } = await supabase.from("contacts").insert({
-      name: input.name,
-      client_id: input.client_id || null,
-      email: input.email || null,
-      role: input.role || null,
-      owner_id: await ownerId(),
-    });
-
-    if (error) throw new Error(error.message);
+    const conn = await db();
+    await conn.query(
+      `insert into public.contacts (owner_id, name, client_id, email, role)
+       values ((select public.app_user_id()), $1, $2, $3, $4)`,
+      [input.name, input.client_id || null, input.email || null, input.role || null]
+    );
   } catch (error) {
     return fail(error);
   }
@@ -502,17 +492,12 @@ export async function createTask(_prev: FormState, formData: FormData): Promise<
     const input = taskInput.parse(Object.fromEntries(formData));
     if (input.due_on && !isIsoDate(input.due_on)) throw new Error("Due date isn't valid.");
 
-    const supabase = await createServerSupabase();
-    const { error } = await supabase.from("tasks").insert({
-      project_id: input.project_id,
-      title: input.title,
-      due_on: input.due_on,
-      status: "open",
-      source: "manual",
-      owner_id: await ownerId(),
-    });
-
-    if (error) throw new Error(error.message);
+    const conn = await db();
+    await conn.query(
+      `insert into public.tasks (owner_id, project_id, title, due_on, status, source)
+       values ((select public.app_user_id()), $1, $2, $3, 'open', 'manual')`,
+      [input.project_id, input.title, input.due_on]
+    );
   } catch (error) {
     return fail(error);
   }
@@ -525,12 +510,17 @@ export async function createTask(_prev: FormState, formData: FormData): Promise<
 /** Cycles open → doing → done. A separate explicit action drops a task rather
  * than folding it into the cycle, so it never gets there by accident. */
 export async function advanceTask(taskId: string): Promise<void> {
-  const supabase = await createServerSupabase();
-  const { data } = await supabase.from("tasks").select("status").eq("id", taskId).single();
-  if (!data) return;
+  const conn = await db();
 
-  const next = data.status === "open" ? "doing" : data.status === "doing" ? "done" : "open";
-  await supabase.from("tasks").update({ status: next }).eq("id", taskId);
+  const rows = await conn.query<{ status: string }>(
+    `select status from public.tasks where id = $1`,
+    [taskId]
+  );
+  const current = rows[0];
+  if (!current) return;
+
+  const next = current.status === "open" ? "doing" : current.status === "doing" ? "done" : "open";
+  await conn.query(`update public.tasks set status = $1 where id = $2`, [next, taskId]);
 
   revalidatePath("/tasks");
   revalidatePath("/");
@@ -550,51 +540,50 @@ const resolveThreadInput = z.object({
 });
 
 /**
- * Resolving a thread does two things in one transaction-shaped call: sets
- * this thread's own match, and — unless the user said "just this once" —
- * writes a match_rules row so the SAME pattern (address or domain) never
- * has to be resolved again. This is the "resolve it once, it's remembered"
- * promise the brief makes for both mail and, later, Granola.
+ * Resolving a thread does two things atomically: sets this thread's own
+ * match, and — unless the user said "just this once" — writes a
+ * match_rules row so the SAME pattern (address or domain) never has to be
+ * resolved again. This is the "resolve it once, it's remembered" promise
+ * the brief makes for both mail and, later, Granola.
  */
 export async function resolveThread(_prev: FormState, formData: FormData): Promise<FormState> {
   try {
     const input = resolveThreadInput.parse(Object.fromEntries(formData));
-    const supabase = await createServerSupabase();
-    const owner = await ownerId();
+    const conn = await db();
 
-    const { data: thread, error: threadError } = await supabase
-      .from("email_threads")
-      .select("from_address")
-      .eq("id", input.thread_id)
-      .single();
-    if (threadError) throw new Error(threadError.message);
+    const threadRows = await conn.query<{ from_address: string }>(
+      `select from_address from public.email_threads where id = $1`,
+      [input.thread_id]
+    );
+    const thread = threadRows[0];
+    if (!thread) throw new Error("That thread doesn't exist.");
 
-    const { error: updateError } = await supabase
-      .from("email_threads")
-      .update({
-        client_id: input.client_id,
-        project_id: input.project_id || null,
-        matched_by: "manual",
-      })
-      .eq("id", input.thread_id);
-    if (updateError) throw new Error(updateError.message);
+    await conn.transaction((q) => {
+      const queries = [
+        q(
+          `update public.email_threads set client_id = $1, project_id = $2, matched_by = 'manual'
+             where id = $3`,
+          [input.client_id, input.project_id || null, input.thread_id]
+        ),
+      ];
 
-    if (input.remember_by !== "just_this_once") {
-      const fromAddress = String(thread.from_address).toLowerCase();
-      const pattern =
-        input.remember_by === "address" ? fromAddress : fromAddress.split("@")[1];
+      if (input.remember_by !== "just_this_once") {
+        const fromAddress = thread.from_address.toLowerCase();
+        const pattern =
+          input.remember_by === "address" ? fromAddress : fromAddress.split("@")[1];
+        const kind = input.remember_by === "address" ? "address" : "email_domain";
 
-      const { error: ruleError } = await supabase.from("match_rules").insert({
-        owner_id: owner,
-        kind: input.remember_by === "address" ? "address" : "email_domain",
-        pattern,
-        client_id: input.client_id,
-        project_id: input.project_id || null,
-      });
-      // A duplicate rule (someone already resolved this exact pattern) is
-      // not an error worth surfacing — the thread itself is still resolved.
-      if (ruleError && ruleError.code !== "23505") throw new Error(ruleError.message);
-    }
+        queries.push(
+          q(
+            `insert into public.match_rules (owner_id, kind, pattern, client_id, project_id)
+             values ((select public.app_user_id()), $1, $2, $3, $4)
+             on conflict (owner_id, kind, pattern) where deleted_at is null do nothing`,
+            [kind, pattern, input.client_id, input.project_id || null]
+          )
+        );
+      }
+      return queries;
+    });
   } catch (error) {
     return fail(error);
   }

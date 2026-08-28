@@ -1,11 +1,9 @@
 import { Card, EmptyState } from "@/components/ui/primitives";
 import { PageBody, PageHeader } from "@/components/ui/page";
-import { createServerSupabase } from "@/lib/supabase/server";
 import { addDays, formatDateShort, todayIso } from "@/lib/dates";
 import { capacityByWeek, WORKING_DAYS_PER_WEEK } from "@/lib/db/capacity";
-import { listTimeEntries } from "@/lib/db/queries";
+import { listTimeEntries, listUpcomingEngagementWindows } from "@/lib/db/queries";
 import { loggedByWeek } from "@/lib/db/time";
-import type { EngagementWindow } from "@/lib/db/types";
 
 export const metadata = { title: "Timetable · Freelance OS" };
 
@@ -13,18 +11,7 @@ export default async function TimetablePage() {
   const today = todayIso();
   const horizon = addDays(today, 8 * 7);
 
-  const supabase = await createServerSupabase();
-  const { data, error } = await supabase
-    .from("engagement_windows")
-    .select("id,project_id,starts_on,ends_on,days_committed,note,projects(name)")
-    .is("deleted_at", null)
-    .lte("starts_on", horizon)
-    .gte("ends_on", today)
-    .order("starts_on");
-
-  if (error) throw new Error(error.message);
-
-  const windows = (data ?? []) as unknown as EngagementWindow[];
+  const windows = await listUpcomingEngagementWindows(today, horizon);
   const weeks = capacityByWeek(windows, today, 8);
 
   // Actual hours against the plan. Logged time is read from four weeks back so

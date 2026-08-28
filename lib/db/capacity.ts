@@ -77,3 +77,24 @@ export function capacityByWeek(
     committed: Math.round(committed * 10) / 10,
   }));
 }
+
+/**
+ * "If nothing new comes in, when do I run out of work?" — the brief's own
+ * framing for the Pipeline module, distinct from the £-weighted pipeline
+ * total (which answers "how much might land," not "when does booked work
+ * stop"). Defined as whole weeks from today to the LATEST end date among
+ * engagement windows that haven't finished yet — not total committed days
+ * divided by a working week, which would be wrong whenever bookings have
+ * gaps: a window ending in 3 weeks followed by a 6-week gap before the next
+ * one means the honest answer is "3 weeks," not "9 weeks of booked days
+ * spread out." Zero windows, or all of them already finished, is a real
+ * answer (0 — out of work now), not a missing one.
+ */
+export function weeksOfRunway(windows: readonly EngagementWindow[], today: string): number {
+  const future = windows.filter((w) => w.ends_on >= today);
+  if (future.length === 0) return 0;
+
+  const lastEndsOn = future.reduce((latest, w) => (w.ends_on > latest ? w.ends_on : latest), future[0]!.ends_on);
+  const days = daysBetween(today, lastEndsOn);
+  return Math.max(0, Math.floor(days / 7));
+}

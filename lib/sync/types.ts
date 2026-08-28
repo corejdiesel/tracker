@@ -1,11 +1,11 @@
 /**
  * The sync engine's dependencies, as interfaces — not `better-sqlite3`, not
- * `@supabase/supabase-js` directly. That is what makes `engine.ts` testable
- * with plain in-memory fakes; see docs/desktop-architecture.md §4.5. The
- * Tauri command bridge (`desktop/src-tauri/src/commands.rs`) satisfies
- * `LocalStore`; a thin wrapper over the Supabase JS client satisfies
- * `RemoteStore`. Neither adapter is wired up yet — see the note in the
- * commit this file ships in.
+ * `@neondatabase/serverless` directly. That is what makes `engine.ts`
+ * testable with plain in-memory fakes; see docs/desktop-architecture.md
+ * §4.5. The Tauri command bridge (`desktop/src-tauri/src/commands.rs`)
+ * satisfies `LocalStore`; a thin wrapper over `lib/db/client.ts`'s
+ * `withUser()` satisfies `RemoteStore`. Neither adapter is wired up yet —
+ * see the note in the commit this file ships in.
  */
 
 /** Any row this engine moves must carry these three columns — every synced

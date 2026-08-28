@@ -1,6 +1,6 @@
 import JSZip from "jszip";
 import { buildExportCsvs, README_TEXT } from "@/lib/export/build-export";
-import { getUser } from "@/lib/supabase/server";
+import { getSessionUserId } from "@/lib/auth/session";
 import {
   listClients, listContacts, listEngagementWindows, listExpenses,
   listInvoiceLineItems, listInvoices, listProjects, listRecurringCosts,
@@ -12,13 +12,13 @@ import {
  * available. I need to be able to hand my accountant a folder and leave."
  *
  * A GET so it's a plain link/button, not a form — RLS still scopes every
- * query to the signed-in user underneath this, but the explicit `getUser()`
+ * query to the signed-in user underneath this, but the explicit session
  * check below means an unauthenticated request gets a clean 401 rather than
  * an empty zip that looks like a bug.
  */
 export async function GET() {
-  const user = await getUser();
-  if (!user) {
+  const userId = await getSessionUserId();
+  if (!userId) {
     return new Response("Sign in to export your data.", { status: 401 });
   }
 

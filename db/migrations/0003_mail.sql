@@ -7,7 +7,7 @@
 
 create table public.email_threads (
   id            uuid primary key default gen_random_uuid(),
-  owner_id      uuid not null references auth.users(id) on delete cascade,
+  owner_id      uuid not null references public.users(id) on delete cascade,
   external_id   text not null,             -- Gmail thread id
   client_id     uuid references public.clients(id) on delete set null,
   project_id    uuid references public.projects(id) on delete set null,
@@ -51,7 +51,7 @@ create index email_threads_from_domain_idx
 -- confirmation, and a suggestion row existing is not that confirmation.
 create table public.mail_suggestions (
   id              uuid primary key default gen_random_uuid(),
-  owner_id        uuid not null references auth.users(id) on delete cascade,
+  owner_id        uuid not null references public.users(id) on delete cascade,
   email_thread_id uuid not null references public.email_threads(id) on delete cascade,
   kind            text not null check (kind in ('expense','deadline','invoice_chaser')),
   -- The proposal itself, shaped per `kind` — a draft expense's fields, a
@@ -86,9 +86,17 @@ begin
       'create trigger %I_touch_updated_at before update on public.%I
          for each row execute function public.touch_updated_at()', t, t);
     execute format('alter table public.%I enable row level security', t);
+    -- Without FORCE, Postgres exempts the TABLE OWNER from every RLS policy
+    -- on it. Neon has no PostgREST-style separate low-privilege role the way
+    -- Supabase does — the connection role the app authenticates with is the
+    -- same role that created these tables, so without this every policy
+    -- below would be a silent no-op for that exact role. Confirmed on a real
+    -- Neon database, not assumed: the table owner saw every row before this
+    -- was added, with the policies already in place.
+    execute format('alter table public.%I force row level security', t);
     execute format(
       'create policy %I on public.%I for all
-         using (auth.uid() = owner_id) with check (auth.uid() = owner_id)',
+         using (public.app_user_id() = owner_id) with check (public.app_user_id() = owner_id)',
       t || '_owner', t);
   end loop;
 end $$;

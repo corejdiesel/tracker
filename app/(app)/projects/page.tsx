@@ -2,9 +2,10 @@ import { Badge, Card, EmptyState, Field, Money, inputClass, type BadgeTone } fro
 import { CreatePanel, selectClass } from "@/components/ui/CreatePanel";
 import { PageBody, PageHeader } from "@/components/ui/page";
 import { createProject } from "@/lib/db/actions";
-import { listClients, listProjects } from "@/lib/db/queries";
+import { listClients, listEngagementWindows, listProjects } from "@/lib/db/queries";
+import { weeksOfRunway } from "@/lib/db/capacity";
 import { formatMoney, toPence } from "@/lib/money";
-import { formatDateShort } from "@/lib/dates";
+import { formatDateShort, todayIso } from "@/lib/dates";
 import type { ProjectStatus } from "@/lib/db/types";
 
 export const metadata = { title: "Projects · Freelance OS" };
@@ -25,7 +26,9 @@ const ORDER: readonly ProjectStatus[] = [
 ];
 
 export default async function ProjectsPage() {
-  const [projects, clients] = await Promise.all([listProjects(), listClients()]);
+  const [projects, clients, engagementWindows] = await Promise.all([
+    listProjects(), listClients(), listEngagementWindows(),
+  ]);
 
   // Weighted pipeline: fee × probability, over everything not yet won.
   const weighted = projects
@@ -35,6 +38,11 @@ export default async function ProjectsPage() {
         total + (toPence(p.fee_pence) * BigInt(p.probability ?? 0)) / BigInt(100),
       BigInt(0)
     );
+
+  // "If nothing new comes in, when do I run out of work?" — the brief's own
+  // framing, distinct from the £-weighted total above: this is about
+  // committed, booked time, not pipeline that might land.
+  const runway = weeksOfRunway(engagementWindows, todayIso());
 
   const grouped = ORDER.map((status) => ({
     status,
@@ -46,9 +54,10 @@ export default async function ProjectsPage() {
       <PageHeader
         title="Projects"
         subtitle={
-          weighted > BigInt(0)
-            ? `${formatMoney(weighted)} of weighted pipeline still pitching`
-            : "Nothing in the pipeline yet"
+          runway === 0
+            ? "No work booked beyond today, unless something new lands"
+            : `${runway} week${runway === 1 ? "" : "s"} of booked work` +
+              (weighted > BigInt(0) ? ` · ${formatMoney(weighted)} weighted pipeline still pitching` : "")
         }
       />
 

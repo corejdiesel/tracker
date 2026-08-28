@@ -18,7 +18,7 @@ create extension if not exists "pgcrypto";
 
 create table public.clients (
   id                    uuid primary key default gen_random_uuid(),
-  owner_id              uuid not null references auth.users(id) on delete cascade,
+  owner_id              uuid not null references public.users(id) on delete cascade,
   name                  text not null,
   company_number        text,
   vat_number            text,
@@ -34,7 +34,7 @@ create table public.clients (
 
 create table public.contacts (
   id         uuid primary key default gen_random_uuid(),
-  owner_id   uuid not null references auth.users(id) on delete cascade,
+  owner_id   uuid not null references public.users(id) on delete cascade,
   client_id  uuid references public.clients(id) on delete cascade,
   name       text not null,
   email      citext,
@@ -53,7 +53,7 @@ create index contacts_email_domain_idx
 
 create table public.projects (
   id              uuid primary key default gen_random_uuid(),
-  owner_id        uuid not null references auth.users(id) on delete cascade,
+  owner_id        uuid not null references public.users(id) on delete cascade,
   client_id       uuid not null references public.clients(id) on delete restrict,
   name            text not null,
   status          text not null default 'pitching'
@@ -82,7 +82,7 @@ create index projects_client_idx on public.projects (client_id) where deleted_at
 -- have several windows (a pitch week in May, delivery in July).
 create table public.engagement_windows (
   id              uuid primary key default gen_random_uuid(),
-  owner_id        uuid not null references auth.users(id) on delete cascade,
+  owner_id        uuid not null references public.users(id) on delete cascade,
   project_id      uuid not null references public.projects(id) on delete cascade,
   starts_on       date not null,
   ends_on         date not null,
@@ -99,7 +99,7 @@ create index engagement_windows_range_idx
 
 create table public.tasks (
   id                   uuid primary key default gen_random_uuid(),
-  owner_id             uuid not null references auth.users(id) on delete cascade,
+  owner_id             uuid not null references public.users(id) on delete cascade,
   project_id           uuid references public.projects(id) on delete cascade,
   engagement_window_id uuid references public.engagement_windows(id) on delete set null,
   title                text not null,
@@ -123,7 +123,7 @@ create index tasks_due_idx on public.tasks (owner_id, due_on)
 
 create table public.recurring_costs (
   id               uuid primary key default gen_random_uuid(),
-  owner_id         uuid not null references auth.users(id) on delete cascade,
+  owner_id         uuid not null references public.users(id) on delete cascade,
   vendor           text not null,
   amount_pence     bigint not null check (amount_pence >= 0),
   cadence          text not null check (cadence in ('monthly','quarterly','annual')),
@@ -145,7 +145,7 @@ create index recurring_costs_next_charge_idx
 
 create table public.expenses (
   id                uuid primary key default gen_random_uuid(),
-  owner_id          uuid not null references auth.users(id) on delete cascade,
+  owner_id          uuid not null references public.users(id) on delete cascade,
   spent_on          date not null,
   vendor            text not null,
   net_pence         bigint not null check (net_pence >= 0),
@@ -177,7 +177,7 @@ create index expenses_category_idx on public.expenses (owner_id, category_slug) 
 
 create table public.invoices (
   id             uuid primary key default gen_random_uuid(),
-  owner_id       uuid not null references auth.users(id) on delete cascade,
+  owner_id       uuid not null references public.users(id) on delete cascade,
   client_id      uuid not null references public.clients(id) on delete restrict,
   project_id     uuid references public.projects(id) on delete set null,
   number         text not null,
@@ -207,7 +207,7 @@ create index invoices_due_idx on public.invoices (owner_id, due_date)
 
 create table public.invoice_line_items (
   id             uuid primary key default gen_random_uuid(),
-  owner_id       uuid not null references auth.users(id) on delete cascade,
+  owner_id       uuid not null references public.users(id) on delete cascade,
   invoice_id     uuid not null references public.invoices(id) on delete cascade,
   description    text not null,
   quantity       numeric(8,2) not null default 1 check (quantity > 0),
@@ -229,7 +229,7 @@ create index invoice_line_items_invoice_idx on public.invoice_line_items (invoic
 
 create table public.tax_obligations (
   id               uuid primary key default gen_random_uuid(),
-  owner_id         uuid not null references auth.users(id) on delete cascade,
+  owner_id         uuid not null references public.users(id) on delete cascade,
   kind             text not null check (kind in (
                      'vat_return','mtd_quarterly','ct600','ct_payment',
                      'self_assessment','payment_on_account','paye')),
@@ -255,7 +255,7 @@ create unique index tax_obligations_period_idx
 
 create table public.meetings (
   id            uuid primary key default gen_random_uuid(),
-  owner_id      uuid not null references auth.users(id) on delete cascade,
+  owner_id      uuid not null references public.users(id) on delete cascade,
   source        text not null default 'granola' check (source in ('granola')),
   external_id   text not null,
   client_id     uuid references public.clients(id) on delete set null,
@@ -283,7 +283,7 @@ create index meetings_triage_idx on public.meetings (owner_id, held_at)
 -- Granola and the mail triage queues — one table, two consumers.
 create table public.match_rules (
   id         uuid primary key default gen_random_uuid(),
-  owner_id   uuid not null references auth.users(id) on delete cascade,
+  owner_id   uuid not null references public.users(id) on delete cascade,
   kind       text not null check (kind in ('email_domain','address','subject')),
   pattern    citext not null,
   client_id  uuid references public.clients(id) on delete cascade,
@@ -335,9 +335,17 @@ begin
     'tax_obligations','meetings','match_rules'
   ] loop
     execute format('alter table public.%I enable row level security', t);
+    -- Without FORCE, Postgres exempts the TABLE OWNER from every RLS policy
+    -- on it. Neon has no PostgREST-style separate low-privilege role the way
+    -- Supabase does — the connection role the app authenticates with is the
+    -- same role that created these tables, so without this every policy
+    -- below would be a silent no-op for that exact role. Confirmed on a real
+    -- Neon database, not assumed: the table owner saw every row before this
+    -- was added, with the policies already in place.
+    execute format('alter table public.%I force row level security', t);
     execute format(
       'create policy %I on public.%I for all
-         using (auth.uid() = owner_id) with check (auth.uid() = owner_id)',
+         using (public.app_user_id() = owner_id) with check (public.app_user_id() = owner_id)',
       t || '_owner', t);
   end loop;
 end $$;

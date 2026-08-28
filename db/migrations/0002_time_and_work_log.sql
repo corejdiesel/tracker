@@ -16,7 +16,7 @@
 
 create table public.time_entries (
   id          uuid primary key default gen_random_uuid(),
-  owner_id    uuid not null references auth.users(id) on delete cascade,
+  owner_id    uuid not null references public.users(id) on delete cascade,
   project_id  uuid not null references public.projects(id) on delete cascade,
   task_id     uuid references public.tasks(id) on delete set null,
   worked_on   date not null,
@@ -46,7 +46,7 @@ create index time_entries_project_idx
 -- — the database refuses a second start rather than the UI trying to.
 
 create table public.running_timers (
-  owner_id   uuid primary key references auth.users(id) on delete cascade,
+  owner_id   uuid primary key references public.users(id) on delete cascade,
   project_id uuid not null references public.projects(id) on delete cascade,
   task_id    uuid references public.tasks(id) on delete set null,
   started_at timestamptz not null default now(),
@@ -60,7 +60,7 @@ create table public.running_timers (
 
 create table public.work_artefacts (
   id            uuid primary key default gen_random_uuid(),
-  owner_id      uuid not null references auth.users(id) on delete cascade,
+  owner_id      uuid not null references public.users(id) on delete cascade,
   project_id    uuid not null references public.projects(id) on delete cascade,
   time_entry_id uuid references public.time_entries(id) on delete set null,
   kind          text not null default 'screenshot'
@@ -99,9 +99,17 @@ begin
 
   foreach t in array array['time_entries','running_timers','work_artefacts'] loop
     execute format('alter table public.%I enable row level security', t);
+    -- Without FORCE, Postgres exempts the TABLE OWNER from every RLS policy
+    -- on it. Neon has no PostgREST-style separate low-privilege role the way
+    -- Supabase does — the connection role the app authenticates with is the
+    -- same role that created these tables, so without this every policy
+    -- below would be a silent no-op for that exact role. Confirmed on a real
+    -- Neon database, not assumed: the table owner saw every row before this
+    -- was added, with the policies already in place.
+    execute format('alter table public.%I force row level security', t);
     execute format(
       'create policy %I on public.%I for all
-         using (auth.uid() = owner_id) with check (auth.uid() = owner_id)',
+         using (public.app_user_id() = owner_id) with check (public.app_user_id() = owner_id)',
       t || '_owner', t);
   end loop;
 end $$;
