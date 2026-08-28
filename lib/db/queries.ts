@@ -2,8 +2,9 @@ import { createServerSupabase } from "@/lib/supabase/server";
 import { ARTEFACT_BUCKET } from "./constants";
 import { sumPence, toPence } from "@/lib/money";
 import type {
-  Client, ContactWithClient, ExpenseWithProject, InvoiceWithClient, ProjectWithClient,
-  RecurringCost, RunningTimer, Task, TaskWithProject, TimeEntryWithProject, WorkArtefact,
+  Client, ContactWithClient, EmailThread, ExpenseWithProject, InvoiceWithClient,
+  ProjectWithClient, RecurringCost, RunningTimer, Task, TaskWithProject,
+  TimeEntryWithProject, WorkArtefact,
 } from "./types";
 
 
@@ -278,6 +279,21 @@ export async function listAllArtefactMetadata() {
     .select("id,project_id,time_entry_id,kind,url,caption,captured_at")
     .is("deleted_at", null)
     .order("captured_at");
+  if (error) throw new Error(error.message);
+  return data ?? [];
+}
+
+/* Mail triage ────────────────────────────────────────────────────────────*/
+
+export async function listUnmatchedThreads(): Promise<EmailThread[]> {
+  const supabase = await createServerSupabase();
+  const { data, error } = await supabase
+    .from("email_threads")
+    .select("id,external_id,client_id,project_id,subject,from_name,from_address,snippet,kind,matched_by,received_at")
+    .is("deleted_at", null)
+    .eq("matched_by", "unmatched")
+    .order("received_at", { ascending: false });
+
   if (error) throw new Error(error.message);
   return data ?? [];
 }

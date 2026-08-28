@@ -19,6 +19,7 @@ export const APP_ROUTES = [
   "/expenses",
   "/tasks",
   "/tax",
+  "/mail",
 ] as const;
 
 export type AppRoute = (typeof APP_ROUTES)[number];

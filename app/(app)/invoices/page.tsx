@@ -1,9 +1,11 @@
 import { Badge, Card, EmptyState, Field, Money, inputClass, type BadgeTone } from "@/components/ui/primitives";
 import { CreatePanel, selectClass } from "@/components/ui/CreatePanel";
 import { PageBody, PageHeader } from "@/components/ui/page";
+import { ChaserDraft } from "@/components/mail/ChaserDraft";
 import { createInvoice } from "@/lib/db/actions";
 import { listClients, listInvoices } from "@/lib/db/queries";
 import { effectiveStatus, medianPaymentLag, totalOverdue, totalOwed } from "@/lib/db/invoices";
+import { draftInvoiceChaser } from "@/lib/mail/chaser";
 import { formatMoney, toPence } from "@/lib/money";
 import { formatDate, relativeDays, todayIso } from "@/lib/dates";
 import type { InvoiceStatus } from "@/lib/db/types";
@@ -93,9 +95,17 @@ export default async function InvoicesPage() {
             <ul className="divide-y divide-[var(--border)]">
               {invoices.map((invoice) => {
                 const status = effectiveStatus(invoice, today);
+
+                // This client's own payment history, not the whole book's —
+                // the chaser should judge lateness against how THIS client
+                // usually behaves, not an average across every client.
+                const clientLag = medianPaymentLag(
+                  invoices.filter((i) => i.client_id === invoice.client_id)
+                );
+
                 return (
-                  <li key={invoice.id} className="flex items-center justify-between gap-4 px-4 py-3">
-                    <div className="min-w-0">
+                  <li key={invoice.id} className="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
+                    <div className="min-w-0 flex-1">
                       <p className="truncate text-sm text-ink">
                         {invoice.clients?.name ?? "Unknown client"}
                         <span className="text-ink-faint"> · {invoice.number}</span>
@@ -111,6 +121,20 @@ export default async function InvoicesPage() {
                         {formatMoney(toPence(invoice.total_pence))}
                       </Money>
                     </div>
+                    {status === "overdue" ? (
+                      <div className="w-full">
+                        <ChaserDraft
+                          {...draftInvoiceChaser({
+                            clientName: invoice.clients?.name ?? "this client",
+                            invoiceNumber: invoice.number,
+                            dueDate: invoice.due_date,
+                            totalPence: toPence(invoice.total_pence),
+                            today,
+                            medianPaymentLagDays: clientLag,
+                          })}
+                        />
+                      </div>
+                    ) : null}
                   </li>
                 );
               })}

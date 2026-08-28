@@ -184,3 +184,21 @@ export interface Contact {
 export interface ContactWithClient extends Contact {
   clients: Pick<Client, "name"> | null;
 }
+
+export type EmailThreadKind =
+  | "enquiry" | "scope_change" | "invoice_reply" | "payment_confirmation"
+  | "receipt" | "subscription_charge" | "other";
+
+export interface EmailThread {
+  id: Uuid;
+  external_id: string;
+  client_id: Uuid | null;
+  project_id: Uuid | null;
+  subject: string;
+  from_name: string | null;
+  from_address: string;
+  snippet: string | null;
+  kind: EmailThreadKind;
+  matched_by: "domain" | "address" | "subject" | "manual" | "unmatched";
+  received_at: string;
+}

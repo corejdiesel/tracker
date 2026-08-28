@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { CheckSquare, Contact, CalendarDays, Clock, Coins, FileText, Home, Landmark, Receipt, ReceiptText, Users } from "lucide-react";
+import { CheckSquare, Contact, CalendarDays, Clock, Coins, FileText, Home, Landmark, Mail, Receipt, ReceiptText, Users } from "lucide-react";
 import { signOut } from "@/app/(auth)/login/actions";
 
 const nav = [
@@ -13,6 +13,7 @@ const nav = [
   { href: "/invoices", label: "Money in", icon: Receipt },
   { href: "/costs", label: "Money out", icon: Coins },
   { href: "/tax", label: "Tax", icon: Landmark },
+  { href: "/mail", label: "Mail", icon: Mail },
   { href: "/expenses", label: "Expenses", icon: ReceiptText },
 ] as const;
 

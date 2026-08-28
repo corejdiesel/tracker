@@ -535,3 +535,70 @@ export async function advanceTask(taskId: string): Promise<void> {
   revalidatePath("/tasks");
   revalidatePath("/");
 }
+
+/* Mail triage ───────────────────────────────────────────────────────────────*/
+
+const resolveThreadInput = z.object({
+  thread_id: z.uuid(),
+  client_id: z.uuid("Pick a client."),
+  project_id: z.string().optional(),
+  // Whether to remember this so future mail from the same sender resolves
+  // itself. Off by default for a shared inbox address (e.g. hello@agency.com
+  // could plausibly be a different client next time); on by default for a
+  // named person, per the checkbox default in the UI.
+  remember_by: z.enum(["address", "domain", "just_this_once"]),
+});
+
+/**
+ * Resolving a thread does two things in one transaction-shaped call: sets
+ * this thread's own match, and — unless the user said "just this once" —
+ * writes a match_rules row so the SAME pattern (address or domain) never
+ * has to be resolved again. This is the "resolve it once, it's remembered"
+ * promise the brief makes for both mail and, later, Granola.
+ */
+export async function resolveThread(_prev: FormState, formData: FormData): Promise<FormState> {
+  try {
+    const input = resolveThreadInput.parse(Object.fromEntries(formData));
+    const supabase = await createServerSupabase();
+    const owner = await ownerId();
+
+    const { data: thread, error: threadError } = await supabase
+      .from("email_threads")
+      .select("from_address")
+      .eq("id", input.thread_id)
+      .single();
+    if (threadError) throw new Error(threadError.message);
+
+    const { error: updateError } = await supabase
+      .from("email_threads")
+      .update({
+        client_id: input.client_id,
+        project_id: input.project_id || null,
+        matched_by: "manual",
+      })
+      .eq("id", input.thread_id);
+    if (updateError) throw new Error(updateError.message);
+
+    if (input.remember_by !== "just_this_once") {
+      const fromAddress = String(thread.from_address).toLowerCase();
+      const pattern =
+        input.remember_by === "address" ? fromAddress : fromAddress.split("@")[1];
+
+      const { error: ruleError } = await supabase.from("match_rules").insert({
+        owner_id: owner,
+        kind: input.remember_by === "address" ? "address" : "email_domain",
+        pattern,
+        client_id: input.client_id,
+        project_id: input.project_id || null,
+      });
+      // A duplicate rule (someone already resolved this exact pattern) is
+      // not an error worth surfacing — the thread itself is still resolved.
+      if (ruleError && ruleError.code !== "23505") throw new Error(ruleError.message);
+    }
+  } catch (error) {
+    return fail(error);
+  }
+
+  revalidatePath("/mail");
+  return {};
+}
