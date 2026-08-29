@@ -10,7 +10,7 @@
     "tauri": "tauri"
   },
   "dependencies": {
-    "@supabase/supabase-js": "^2.107.0",
+    "@neondatabase/serverless": "^1.1.0",
     "react": "19.2.4",
     "react-dom": "19.2.4"
   },

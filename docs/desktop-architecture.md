@@ -8,10 +8,10 @@ not offline; genuine local-first is a real subsystem. This is that subsystem.
 ## 1. Why this can't just be the existing Next.js app in a Tauri window
 
 The web app (`app/`) is built on React Server Components and Server Actions —
-`app/(app)/page.tsx` is `async` and calls `createServerSupabase()`, which
-needs a live server process and a network round-trip to Supabase for every
-render. A Tauri window pointing at that app with no network shows nothing:
-there is no server to render it and no data to read.
+`app/(app)/page.tsx` is `async` and calls `lib/db/queries.ts`, which needs a
+live server process and a network round-trip to Neon for every render. A
+Tauri window pointing at that app with no network shows nothing: there is no
+server to render it and no data to read.
 
 Two ways to get real offline:
 
@@ -19,8 +19,8 @@ Two ways to get real offline:
    and keep talking to Postgres through it. Heavy, and it still needs
    Postgres reachable — bundling the server doesn't remove the network
    dependency, it just moves where the HTTP call originates from.
-2. **A client-only frontend backed by local SQLite**, synced to Supabase in
-   the background when a network exists. The window renders from a database
+2. **A client-only frontend backed by local SQLite**, synced to Neon in the
+   background when a network exists. The window renders from a database
    sitting on disk; network is an input to that database, not a rendering
    dependency.
 
@@ -28,7 +28,8 @@ Two ways to get real offline:
 desktop app is architecturally a different data layer from the web app, not
 a repackaging of it — they can share pure logic (`lib/money.ts`,
 `lib/dates.ts`, `lib/tax-company/*`) but not `lib/db/queries.ts` or
-`lib/db/actions.ts`, which are Supabase-server-coupled by design.
+`lib/db/actions.ts`, which are server-coupled by design (session cookies,
+`next/headers`).
 
 ## 2. Scope of this pass
 
@@ -150,10 +151,43 @@ after an edit correctly wins.
 ### 4.5 Why pure TypeScript, not Rust
 
 The sync engine takes a `LocalStore` and `RemoteStore` interface — small,
-injectable, mockable — rather than talking to `better-sqlite3` or Supabase
+injectable, mockable — rather than talking to `better-sqlite3` or Neon
 directly. That is what makes §4.3/§4.4 testable with plain Vitest, the same
 suite that already covers the tax and money logic, with no Tauri runtime,
 no real SQLite file, and no network. The Tauri command layer (Rust) is a
-thin adapter satisfying `LocalStore`; the actual `@supabase/supabase-js`
-client satisfies `RemoteStore`. Correctness of the *policy* (§4.2–4.4) is
-proven independently of correctness of the *plumbing*.
+thin adapter satisfying `LocalStore` (`desktop/src/bridge/local-store.ts`);
+`@neondatabase/serverless` satisfies `RemoteStore`
+(`desktop/src/bridge/remote-store.ts`). Correctness of the *policy*
+(§4.2–4.4) is proven independently of correctness of the *plumbing*.
+
+## 5. Both ends wired (29 Aug 2026)
+
+`RemoteStore` and `LocalStore` are both implemented now (not the interfaces
+above — the actual adapters), plus a scheduler
+(`desktop/src/sync/scheduler.ts`, syncs on startup/interval/reconnect) and
+`writeLocalMutation()` for the outbox-write half. `desktop/src/sync/columns.ts`
+holds the one genuinely fiddly part: Postgres and the local SQLite schema
+are kept column-identical by convention, except two columns Postgres
+computes itself (`invoices.total_pence`, `expenses.gross_pence`, both
+`generated always as (...) stored`) which must never be sent on a write
+there, and a handful of columns that are `boolean` in Postgres but SQLite
+INTEGER 0/1 locally, which need explicit coercion on the push direction
+(the pull direction needs none — `db.rs`'s `json_to_sql` already normalises
+a JSON boolean to SQLite's 0/1 on the way in).
+
+**A second RLS finding, found while verifying this against the live
+database**: `FORCE ROW LEVEL SECURITY` (§0001's fix) stops a table's *owner*
+being exempt from RLS, but Neon's default project role (`neondb_owner`) also
+carries the separate `BYPASSRLS` attribute, which skips row security
+regardless of FORCE. Confirmed live: inserted a row as one user, read it
+back as a different user through `neondb_owner`, and RLS did not filter it
+— even though `app_user_id()` correctly resolved to the second user's id at
+query time. `neondb_owner` cannot strip its own `BYPASSRLS` (Neon rejects
+the `ALTER ROLE`), so the fix is a second role that never had it:
+`db/migrations/0004_app_role.sql` creates `app_user` (`NOBYPASSRLS`, no
+ownership, only the grants the app needs), and `NEON_DSN` — both the web
+app's and the desktop app's `VITE_NEON_DSN` — now points at that role, not
+the project owner. Re-verified the same way afterward: isolation held.
+`scripts/create-user.mjs`, `scripts/migrate-neon.mjs`, and
+`scripts/set-app-role-password.mjs` still need the owner credential (DDL,
+role creation) — only the *running app's* connection changed.

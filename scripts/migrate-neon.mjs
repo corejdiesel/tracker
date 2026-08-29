@@ -13,8 +13,13 @@
  * atomic transaction via sql.transaction(), so a mistake mid-file rolls
  * back the whole file rather than leaving a half-migrated schema behind.
  *
- * Usage:
- *   NEON_DSN=postgresql://... node scripts/migrate-neon.mjs
+ * Usage (the OWNER-level connection string — these migrations run DDL,
+ * including creating the app_user role in 0004_app_role.sql, which the app's
+ * own restricted NEON_DSN cannot do):
+ *   NEON_DSN=postgresql://<owner>... node scripts/migrate-neon.mjs
+ *
+ * Run scripts/set-app-role-password.mjs once afterward (also with the owner
+ * DSN) to get the connection string that actually belongs in .env.local.
  *
  * Does NOT track which migrations have already run — there is no schema
  * history table (yet). Re-running an already-applied file will fail loudly

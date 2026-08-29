@@ -7,9 +7,12 @@ verified, since this was built without access to a Mac).
 
 **Current scope:** the plumbing, not the UI. One placeholder screen
 (`src/App.tsx`) proves the Tauri window can read the local SQLite database
-through the Rust bridge. The sync engine (`../lib/sync/`) is fully built and
-tested but not yet wired to a running Supabase adapter or a scheduler — see
-the TODO at the bottom.
+through the Rust bridge, and — when `.env.local` is configured (see
+`.env.example`) — that it can sync against Neon on an interval and on
+reconnect. The sync engine (`../lib/sync/`) is fully built and tested, and
+now has both ends wired: a `RemoteStore` over Neon (`src/bridge/remote-store.ts`)
+and a `LocalStore` over the Tauri bridge (`src/bridge/local-store.ts`) — see
+the TODO at the bottom for what's still not done.
 
 ## Running it
 
@@ -43,17 +46,22 @@ pnpm -C .. test                             # the sync engine, lib/sync/
 
 ## What's next (not done in this pass)
 
-- **A `RemoteStore` adapter over `@supabase/supabase-js`**, satisfying the
-  interface in `../lib/sync/types.ts`.
-- **A `LocalStore` adapter over the Tauri bridge** (`src/bridge/local-db.ts`),
-  satisfying the same interface on the other side.
-- **A scheduler** — call `syncOnce()` from `../lib/sync/engine.ts` on an
-  interval and on reconnect, surfacing failures rather than swallowing them.
-- **The outbox itself needs writing to** — every local mutation (creating an
-  invoice, logging time, …) has to insert an `outbox` row alongside its
-  actual table write, in the same SQLite transaction. Nothing does that yet.
-- **The other ten screens.** This pass proves one vertical slice end-to-end;
-  repeating it for clients/projects/invoices/expenses/etc. is mechanical
-  once the adapters above exist, but it's real work, not automatic.
+- ~~A `RemoteStore` adapter~~ — done: `src/bridge/remote-store.ts`, over
+  `@neondatabase/serverless` (not Supabase — see `../docs/desktop-architecture.md`).
+- ~~A `LocalStore` adapter over the Tauri bridge~~ — done: `src/bridge/local-store.ts`.
+- ~~A scheduler~~ — done: `src/sync/scheduler.ts`, wired into `App.tsx`. Runs
+  on startup, on an interval, and on the browser `online` event; failures
+  surface in the placeholder UI rather than being swallowed.
+- ~~The outbox itself needs writing to~~ — `writeLocalMutation()` in
+  `src/bridge/local-store.ts` upserts a row and queues its outbox entry in
+  one SQLite transaction. Nothing calls it yet, though — no mutation screen
+  exists to call it from (see the next point).
+- **The other ten screens.** This pass proves the plumbing end-to-end for
+  reads and for sync; every create/edit/delete screen still needs building,
+  and each one is what will actually call `writeLocalMutation()`.
+- **A real login screen.** Sync credentials come from `.env.local`
+  (`VITE_NEON_DSN`, `VITE_USER_ID` — see `.env.example`) for now, not
+  Keychain — there's no UI yet to populate Keychain from. `src/bridge/keychain.ts`
+  is ready for when one exists.
 - **Everything in the Keychain/window/signing rows of the architecture
   doc's verification table** — needs Joe's Mac, not more code from here.

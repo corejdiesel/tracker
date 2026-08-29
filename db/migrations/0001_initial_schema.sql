@@ -342,6 +342,12 @@ begin
     -- below would be a silent no-op for that exact role. Confirmed on a real
     -- Neon database, not assumed: the table owner saw every row before this
     -- was added, with the policies already in place.
+    --
+    -- FORCE alone is still not the whole story: Neon's default owner role
+    -- also has BYPASSRLS, which skips row security regardless of FORCE —
+    -- also confirmed live, separately from the above. See
+    -- 0004_app_role.sql's app_user role, which is what NEON_DSN must
+    -- actually point at for these policies to do anything.
     execute format('alter table public.%I force row level security', t);
     execute format(
       'create policy %I on public.%I for all

@@ -93,6 +93,11 @@ create table expenses (
   project_id        text references projects(id),
   recurring_cost_id text,
   attachment_path   text,
+  -- source/source_ref/confidence: see the matching note on tasks.source_ref
+  -- above — present for sync fidelity with Postgres, unused locally so far.
+  source            text not null default 'manual',
+  source_ref        text,
+  confidence        real,
   created_at        text not null,
   updated_at        text not null,
   deleted_at        text
@@ -124,6 +129,12 @@ create table tasks (
   estimate_hours        real,
   status                text not null default 'open' check (status in ('open','doing','done','dropped')),
   source                text not null default 'manual',
+  -- source_ref/confidence: present so a row synced down from Postgres (which
+  -- has both, for the same automated-extraction provenance this app tracks
+  -- everywhere) round-trips without dropping columns — nothing local reads
+  -- them yet.
+  source_ref            text,
+  confidence            real,
   created_at            text not null,
   updated_at            text not null,
   deleted_at            text
@@ -139,6 +150,8 @@ create table time_entries (
   note        text,
   billable    integer not null default 1,
   source      text not null default 'manual',
+  -- source_ref: see the matching note on tasks.source_ref above.
+  source_ref  text,
   created_at  text not null,
   updated_at  text not null,
   deleted_at  text

@@ -6,8 +6,10 @@
  * one account gets created once, out of band, rather than the app carrying
  * a whole registration flow for a user count of one.
  *
- * Usage:
- *   NEON_DSN=postgresql://... node scripts/create-user.mjs you@example.com 'your password'
+ * Usage (the OWNER-level Neon connection string, not .env.local's NEON_DSN
+ * — that one is app_user, which only has SELECT on this table by design;
+ * see db/migrations/0004_app_role.sql):
+ *   NEON_DSN=postgresql://<owner>... node scripts/create-user.mjs you@example.com 'your password'
  *
  * Hashing matches lib/auth/password.ts exactly (scrypt, salt:hash hex,
  * 64-byte derived key) — this script deliberately does not import that
