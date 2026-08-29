@@ -4,10 +4,12 @@
  * eleven web-app screens. See docs/desktop-architecture.md §2 for what this
  * pass is and isn't.
  */
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { dbQuery } from "./bridge/local-db";
 import { createLocalStore } from "./bridge/local-store";
 import { createRemoteStore } from "./bridge/remote-store";
+import { createTimerClient, type TimerClient } from "./bridge/timer";
+import { TimerWidget } from "./components/TimerWidget";
 import { readSyncConfig } from "./config";
 import { startSyncLoop, type Scheduler, type SyncTickResult } from "./sync/scheduler";
 
@@ -49,8 +51,14 @@ export function App() {
     return () => scheduler?.stop();
   }, []);
 
+  const timerClient = useMemo<TimerClient | null>(() => {
+    const config = readSyncConfig();
+    return config ? createTimerClient(config.dsn, config.userId) : null;
+  }, []);
+
   return (
     <main style={{ fontFamily: "system-ui", padding: 24 }}>
+      <TimerWidget client={timerClient} />
       <h1>Freelance OS</h1>
       <p>Local-first shell — proving the plumbing, not the UI.</p>
       {error ? (
