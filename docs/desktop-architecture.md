@@ -64,9 +64,13 @@ This container is Linux with no macOS SDK, no Xcode, no Keychain. Honestly:
 | Keychain storage actually works | **Not verified** — no Keychain on Linux | **None — needs a Mac** |
 | The app actually launches as a window, renders, and is usable | **Not verified** — Tauri's runtime needs a display and a macOS (or Linux desktop) target build | **None — needs a Mac or a GUI Linux box** |
 | Code signing / notarization / a distributable `.app` | Out of scope entirely from here | **None — needs a Mac + an Apple developer account** |
+| `capture_screen` (§6, `xcap` crate) compiles and links | `cargo build`/`test`/`clippy` on Linux, after installing `libpipewire-0.3-dev` + `libgbm-dev` (not previously required) for xcap's Linux backend | High for compiling; **none for actually capturing** — no display server here at all, and macOS uses a completely different backend (ScreenCaptureKit/CGDisplayCreateImage) that this never exercises |
+| macOS Screen Recording permission flow | **Not verified** — this container has no macOS to prompt for it, and the prompt/relaunch behaviour is Apple's, not this code's | **None — needs a Mac** |
+| The Anthropic API call (session-summary.ts) | Real HTTP request to `api.anthropic.com` with a deliberately invalid key — got a clean 401, confirming the endpoint is reachable and the request body is well-formed (a malformed request would 400, not 401). Mocked-fetch unit tests cover the request/response shape. | Medium — connectivity and shape confirmed; no valid API key was available here to see a real model response or judge its quality |
 
-Anything in the bottom three rows goes back to the Notion action list as
-"needs your Mac to verify," not silently claimed as done.
+Anything in the bottom five rows goes back to the Notion action list as
+"needs your Mac (or your own Anthropic key) to verify," not silently
+claimed as done.
 
 ## 4. The sync engine
 
@@ -191,3 +195,46 @@ the project owner. Re-verified the same way afterward: isolation held.
 `scripts/create-user.mjs`, `scripts/migrate-neon.mjs`, and
 `scripts/set-app-role-password.mjs` still need the owner credential (DDL,
 role creation) — only the *running app's* connection changed.
+
+## 6. The billing timer and periodic-screenshot session summary (29 Aug 2026)
+
+The desktop app is now where the app's actual focus is shifting — the two
+features below are native-capability-first, which is the reason a desktop
+shell exists at all rather than just the PWA.
+
+**Billing timer** (`src/components/TimerWidget.tsx`, `src/bridge/timer.ts`):
+`running_timers` is deliberately not in `lib/sync/engine.ts`'s
+`SYNCED_TABLES` (§4.1) — it's single-source-of-truth transient state, not
+something with a sensible last-write-wins merge story. So the timer talks
+straight to Neon, same connection pattern as `RemoteStore`
+(`src/bridge/neon-connection.ts`, factored out of `remote-store.ts` so the
+two share it), and mirrors `lib/db/actions.ts`'s `startTimer`/`stopTimer`
+exactly — a timer started on desktop and stopped on web behaves
+identically. The widget itself polls every 15s (to notice a start/stop
+from elsewhere) and ticks its own display every second in between.
+
+**Periodic screenshots → an AI-drafted session note**
+(`src-tauri/src/capture.rs`, `src/ai/session-summary.ts`): while the timer
+runs and `VITE_ANTHROPIC_API_KEY` is set, every 5 minutes a screenshot is
+taken (`xcap` crate, base64-PNG over Tauri's IPC — never written to disk),
+described by Claude Haiku in one short sentence, and the image is discarded
+immediately — only the sentence is kept in memory. At Stop, the accumulated
+sentences go through one more Claude call that writes a short work-log
+note in the freelancer's own voice, shown for review/edit before it's
+saved as the actual `time_entries.note` — never silently written, same
+"estimate, not an asserted fact" rule as the rest of this app (the Tax
+page's profit default, the VAT threshold check, all of it).
+
+Both `VITE_NEON_DSN`-style secrets and `VITE_ANTHROPIC_API_KEY` are bundled
+into the built app at compile time, which is the same single-operator-only
+tradeoff already made for the Neon connection string: acceptable because
+Joe builds and runs this himself, never something to ship to anyone else.
+
+**Known limitation, not yet solved**: the `running_timers` row isn't
+cleared until the review panel's Save is clicked, so the elapsed time
+actually recorded reflects whenever `stopTimer()` runs, not the moment
+Stop was first clicked — closing the app mid-review (or just taking a
+while over it) leaves the timer running in Postgres. A real fix needs a
+new column this schema doesn't have (an intended-stop timestamp, captured
+at Stop and reconciled later); accepted as a tradeoff for now rather than
+built speculatively.

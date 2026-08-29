@@ -1,3 +1,4 @@
+mod capture;
 mod commands;
 mod db;
 mod keychain;
@@ -31,6 +32,7 @@ pub fn run() {
             commands::keychain_set,
             commands::keychain_get,
             commands::keychain_delete,
+            capture::capture_screen,
         ])
         .run(tauri::generate_context!())
         .expect("error while running the Freelance OS desktop shell");

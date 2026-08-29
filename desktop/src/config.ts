@@ -18,3 +18,14 @@ export function readSyncConfig(): SyncConfig | null {
   if (!dsn || !userId) return null;
   return { dsn, userId };
 }
+
+/**
+ * Optional — periodic-screenshot session summarization (see
+ * ../ai/session-summary.ts) is simply off if this isn't set, rather than
+ * erroring. Same single-operator-only caveat as VITE_NEON_DSN: this key is
+ * bundled into the built app, which is fine only because Joe builds and
+ * runs it himself.
+ */
+export function readAnthropicApiKey(): string | null {
+  return import.meta.env.VITE_ANTHROPIC_API_KEY || null;
+}

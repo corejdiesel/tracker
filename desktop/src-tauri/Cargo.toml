@@ -26,6 +26,8 @@ keyring = "3"
 uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }
 thiserror = "2"
+xcap = "0.9.8"
+base64 = "0.23.1"
 
 [profile.release]
 panic = "abort"

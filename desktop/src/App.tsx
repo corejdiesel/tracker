@@ -10,7 +10,7 @@ import { createLocalStore } from "./bridge/local-store";
 import { createRemoteStore } from "./bridge/remote-store";
 import { createTimerClient, type TimerClient } from "./bridge/timer";
 import { TimerWidget } from "./components/TimerWidget";
-import { readSyncConfig } from "./config";
+import { readAnthropicApiKey, readSyncConfig } from "./config";
 import { startSyncLoop, type Scheduler, type SyncTickResult } from "./sync/scheduler";
 
 const SYNC_INTERVAL_MS = 30_000;
@@ -55,10 +55,11 @@ export function App() {
     const config = readSyncConfig();
     return config ? createTimerClient(config.dsn, config.userId) : null;
   }, []);
+  const anthropicApiKey = useMemo(() => readAnthropicApiKey(), []);
 
   return (
     <main style={{ fontFamily: "system-ui", padding: 24 }}>
-      <TimerWidget client={timerClient} />
+      <TimerWidget client={timerClient} anthropicApiKey={anthropicApiKey} />
       <h1>Freelance OS</h1>
       <p>Local-first shell — proving the plumbing, not the UI.</p>
       {error ? (

@@ -32,7 +32,9 @@ export interface TimerClient {
   getRunningTimer(): Promise<RunningTimer | null>;
   listActiveProjects(): Promise<ActiveProject[]>;
   startTimer(projectId: string, note?: string): Promise<void>;
-  stopTimer(): Promise<void>;
+  /** noteOverride, when passed (even as ""), replaces the note set at
+   * start — used by the desktop app's AI session-summary review step. */
+  stopTimer(noteOverride?: string): Promise<void>;
   discardTimer(): Promise<void>;
 }
 
@@ -83,7 +85,7 @@ export function createTimerClient(dsn: string, userId: string): TimerClient {
       );
     },
 
-    async stopTimer() {
+    async stopTimer(noteOverride) {
       const rows = await conn.query<{
         project_id: string; task_id: string | null; started_at: string; note: string | null;
       }>(`select project_id, task_id, started_at, note from public.running_timers`);
@@ -91,6 +93,11 @@ export function createTimerClient(dsn: string, userId: string): TimerClient {
       if (!timer) return;
 
       const minutes = elapsedMinutes(timer.started_at);
+      // noteOverride is undefined when the caller isn't offering one (e.g.
+      // discardTimer's sibling paths) — an explicit empty string from a
+      // cleared review-panel textarea should still win over the note typed
+      // at start, so this only falls back to timer.note when truly absent.
+      const note = noteOverride === undefined ? timer.note : noteOverride;
 
       await conn.transaction((q) => {
         const queries = [];
@@ -103,7 +110,7 @@ export function createTimerClient(dsn: string, userId: string): TimerClient {
               [
                 timer.project_id, timer.task_id,
                 timer.started_at.slice(0, 10),
-                Math.min(minutes, 1440), timer.note,
+                Math.min(minutes, 1440), note,
               ]
             )
           );
