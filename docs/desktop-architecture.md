@@ -66,11 +66,10 @@ This container is Linux with no macOS SDK, no Xcode, no Keychain. Honestly:
 | Code signing / notarization / a distributable `.app` | Out of scope entirely from here | **None — needs a Mac + an Apple developer account** |
 | `capture_screen` (§6, `xcap` crate) compiles and links | `cargo build`/`test`/`clippy` on Linux, after installing `libpipewire-0.3-dev` + `libgbm-dev` (not previously required) for xcap's Linux backend | High for compiling; **none for actually capturing** — no display server here at all, and macOS uses a completely different backend (ScreenCaptureKit/CGDisplayCreateImage) that this never exercises |
 | macOS Screen Recording permission flow | **Not verified** — this container has no macOS to prompt for it, and the prompt/relaunch behaviour is Apple's, not this code's | **None — needs a Mac** |
-| The Anthropic API call (session-summary.ts) | Real HTTP request to `api.anthropic.com` with a deliberately invalid key — got a clean 401, confirming the endpoint is reachable and the request body is well-formed (a malformed request would 400, not 401). Mocked-fetch unit tests cover the request/response shape. | Medium — connectivity and shape confirmed; no valid API key was available here to see a real model response or judge its quality |
+| The Ollama vision call (session-summary.ts, §7) | Mocked-fetch unit tests cover the request/response shape against `localhost:11434/api/chat` (model name, image-as-base64-array, error on unreachable). No Ollama daemon here to hit for real. | Low — shape only; whether `moondream`/`qwen2-vl:2b` actually installs, runs, and produces useful descriptions on your Mac is completely unverified |
 
 Anything in the bottom five rows goes back to the Notion action list as
-"needs your Mac (or your own Anthropic key) to verify," not silently
-claimed as done.
+"needs your Mac to verify," not silently claimed as done.
 
 ## 4. The sync engine
 
@@ -215,20 +214,17 @@ from elsewhere) and ticks its own display every second in between.
 
 **Periodic screenshots → an AI-drafted session note**
 (`src-tauri/src/capture.rs`, `src/ai/session-summary.ts`): while the timer
-runs and `VITE_ANTHROPIC_API_KEY` is set, every 5 minutes a screenshot is
+runs and a vision model is configured, every 5 minutes a screenshot is
 taken (`xcap` crate, base64-PNG over Tauri's IPC — never written to disk),
-described by Claude Haiku in one short sentence, and the image is discarded
-immediately — only the sentence is kept in memory. At Stop, the accumulated
-sentences go through one more Claude call that writes a short work-log
-note in the freelancer's own voice, shown for review/edit before it's
-saved as the actual `time_entries.note` — never silently written, same
-"estimate, not an asserted fact" rule as the rest of this app (the Tax
-page's profit default, the VAT threshold check, all of it).
-
-Both `VITE_NEON_DSN`-style secrets and `VITE_ANTHROPIC_API_KEY` are bundled
-into the built app at compile time, which is the same single-operator-only
-tradeoff already made for the Neon connection string: acceptable because
-Joe builds and runs this himself, never something to ship to anyone else.
+described in one short sentence, and the image is discarded immediately —
+only the sentence is kept in memory. At Stop, the accumulated sentences go
+through one more call that writes a short work-log note in the
+freelancer's own voice, shown for review/edit before it's saved as the
+actual `time_entries.note` — never silently written, same "estimate, not
+an asserted fact" rule as the rest of this app (the Tax page's profit
+default, the VAT threshold check, all of it). **This section originally
+shipped calling Claude Haiku over the Anthropic API — see §7 for why and
+how that changed to a local model.**
 
 **Known limitation, not yet solved**: the `running_timers` row isn't
 cleared until the review panel's Save is clicked, so the elapsed time
@@ -238,3 +234,38 @@ while over it) leaves the timer running in Postgres. A real fix needs a
 new column this schema doesn't have (an intended-stop timestamp, captured
 at Stop and reconciled later); accepted as a tradeoff for now rather than
 built speculatively.
+
+## 7. Screen-capture summarization moved from Claude Haiku to a local Ollama model (29 Aug 2026)
+
+§6 originally called Claude Haiku (`claude-haiku-4-5-20251001`) over the
+Anthropic API for both `describeFrame()` and `synthesizeSessionNote()`.
+Reconsidered because every screenshot this feature takes can contain
+client work, invoices, or HMRC/MTD screens — sending that to *any* third
+party, cloud vendor, or jurisdiction is a bigger decision than picking the
+cheapest API, and it sits oddly next to how careful the rest of this app is
+about the same data (fraud-prevention headers, RLS, soft deletes).
+
+Switched to calling a local vision model through [Ollama](https://ollama.com)
+(`http://localhost:11434/api/chat`) instead — `src/ai/session-summary.ts`
+keeps the exact same two-function shape (`describeFrame`,
+`synthesizeSessionNote`) so `TimerWidget.tsx` didn't need to change beyond
+a prop rename (`anthropicApiKey` → `ollamaVisionModel`, now an Ollama model
+tag rather than a secret). Two recommended models, both pulled with
+`ollama pull <tag>` before setting `VITE_OLLAMA_VISION_MODEL`:
+
+- `moondream` — ~1.7GB, ~4GB RAM, the safe default for any Apple Silicon
+  Mac including an 8GB base model. Weaker at reading small on-screen text.
+- `qwen2-vl:2b` — ~2.4GB, ~6-8GB RAM, better at reading what's actually on
+  screen. Notably, this is itself a Chinese-developed model (Alibaba) —
+  raised in the same conversation as an alternative to Haiku, and it turns
+  out the better fit is running it locally rather than calling it as a
+  cloud API, which would just trade one third-party data-exposure question
+  for another.
+
+Deliberately **no cloud fallback** if Ollama isn't running — a missed frame
+just shows as "Last capture failed" in the widget, same as any other
+capture error, rather than silently falling back to a cloud call the whole
+switch was meant to avoid. This is a stricter, more private design than §6
+shipped with, at the cost of needing Ollama installed and running locally
+and of response quality being an unknown until verified on real hardware
+(see the verification table in §3).

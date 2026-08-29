@@ -22,10 +22,11 @@ export function readSyncConfig(): SyncConfig | null {
 /**
  * Optional — periodic-screenshot session summarization (see
  * ../ai/session-summary.ts) is simply off if this isn't set, rather than
- * erroring. Same single-operator-only caveat as VITE_NEON_DSN: this key is
- * bundled into the built app, which is fine only because Joe builds and
- * runs it himself.
+ * erroring. Deliberately a local Ollama model name, not a cloud API key:
+ * screenshots never leave the machine. Value is an Ollama model tag you've
+ * already pulled (`ollama pull moondream`), e.g. "moondream" or
+ * "qwen2-vl:2b" — see .env.example for the RAM tradeoff between them.
  */
-export function readAnthropicApiKey(): string | null {
-  return import.meta.env.VITE_ANTHROPIC_API_KEY || null;
+export function readOllamaVisionModel(): string | null {
+  return import.meta.env.VITE_OLLAMA_VISION_MODEL || null;
 }

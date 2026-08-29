@@ -21,12 +21,18 @@ On top of that, this is now where the app's actual focus is shifting:
   set, see that file's comment), with a live ticking display.
 - **Periodic screen capture + AI session summary**
   (`src-tauri/src/capture.rs`, `src/ai/session-summary.ts`) — while the
-  timer runs and `VITE_ANTHROPIC_API_KEY` is set, a screenshot every 5
-  minutes gets described by Claude and immediately discarded (only the
-  sentence is kept), and at Stop those sentences become a draft work-log
-  note you review before saving. **The macOS side of this — the Screen
-  Recording permission prompt, whether capture actually works from a dev
-  build — is completely unverified from here; see the TODO below.**
+  timer runs and `VITE_OLLAMA_VISION_MODEL` is set, a screenshot every 5
+  minutes gets described by a **local** vision model running under
+  [Ollama](https://ollama.com) (`http://localhost:11434`, e.g. `moondream`
+  or `qwen2-vl:2b` — pull it first with `ollama pull <model>`) and
+  immediately discarded (only the sentence is kept), and at Stop those
+  sentences become a draft work-log note you review before saving.
+  Deliberately local-only, no cloud fallback — screenshots can show client
+  work or HMRC/MTD screens, so nothing ever leaves the machine; if Ollama
+  isn't running, that frame just fails. **The macOS side of this — the
+  Screen Recording permission prompt, whether capture actually works from a
+  dev build, and Ollama's actual behavior on Apple Silicon — is completely
+  unverified from here; see the TODO below.**
 
 See the TODO at the bottom for what's still not done.
 
@@ -38,6 +44,12 @@ librsvg2-dev libsoup-3.0-dev`), plus — since screen capture (`xcap`) was
 added — `libpipewire-0.3-dev libgbm-dev` for its Linux backend. On macOS
 you need Xcode's command line tools instead; nothing else, and the
 Screen Recording permission macOS itself prompts for on first capture.
+
+If you want the AI session-summary feature, also install
+[Ollama](https://ollama.com) and pull a vision model — `ollama pull
+moondream` (small, ~4GB RAM) or `ollama pull qwen2-vl:2b` (better quality,
+~6-8GB RAM) — then set `VITE_OLLAMA_VISION_MODEL` in `.env.local` to the
+tag you pulled. Entirely optional; the timer works without it.
 
 ```bash
 pnpm install
@@ -89,11 +101,12 @@ pnpm -C .. test                             # the sync engine, lib/sync/
   permission is granted, and whether the app needs relaunching after
   granting it (a known macOS quirk for this class of permission, not
   something this code controls).
-- **The Anthropic API call itself, past a bare connectivity check.** Got a
-  clean 401 from `api.anthropic.com` with a deliberately invalid key,
-  confirming the request reaches the endpoint and the body shape is
-  well-formed — but no valid API key was available here to see a real
-  response, so response quality (is the frame description actually useful?
-  is the synthesized note actually good?) is unverified.
+- **Ollama itself, entirely.** No Ollama daemon and no macOS/Apple Silicon
+  here to run one, so `describeFrame`/`synthesizeSessionNote`'s HTTP shape
+  is only tested against a mocked `fetch` (`src/ai/session-summary.test.ts`)
+  — real behavior (does `moondream`/`qwen2-vl:2b` actually install and run
+  under `ollama serve` on your Mac, is response quality good enough to be
+  useful, does a 2B-class model stay fast enough at a 5-minute cadence
+  alongside whatever else is running) is completely unverified.
 - **Everything in the Keychain/window/signing rows of the architecture
   doc's verification table** — needs Joe's Mac, not more code from here.

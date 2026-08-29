@@ -4,12 +4,14 @@
  * notice a start/stop from elsewhere (the web app, say), and ticks its own
  * display every second in between so the number doesn't visibly stall.
  *
- * When VITE_ANTHROPIC_API_KEY is set (see ../config.ts), starting the timer
- * also starts periodic screen capture: every CAPTURE_INTERVAL_MS, grab a
- * frame (bridge/screen-capture.ts), describe it with Claude
- * (ai/session-summary.ts), and keep only that one sentence — the frame
- * itself never touches disk and is discarded the moment the description
- * comes back, per the "not necessarily looked back at" brief. At Stop, the
+ * When VITE_OLLAMA_VISION_MODEL is set (see ../config.ts), starting the
+ * timer also starts periodic screen capture: every CAPTURE_INTERVAL_MS,
+ * grab a frame (bridge/screen-capture.ts), describe it with a local Ollama
+ * vision model (ai/session-summary.ts), and keep only that one sentence —
+ * the frame itself never touches disk and is discarded the moment the
+ * description comes back, per the "not necessarily looked back at" brief.
+ * Deliberately local-only (no cloud fallback if Ollama isn't running) since
+ * frames can show client work or HMRC/MTD screens. At Stop, the
  * accumulated sentences are combined into one draft work-log note, shown
  * for review/edit before anything is actually saved — same "estimate,
  * never an asserted fact" rule as everywhere else in this app.
@@ -44,10 +46,10 @@ export { formatElapsed };
 
 export function TimerWidget({
   client,
-  anthropicApiKey,
+  ollamaVisionModel,
 }: {
   client: TimerClient | null;
-  anthropicApiKey: string | null;
+  ollamaVisionModel: string | null;
 }) {
   const [timer, setTimer] = useState<RunningTimer | null>(null);
   const [projects, setProjects] = useState<ActiveProject[]>([]);
@@ -110,17 +112,18 @@ export function TimerWidget({
   }, [timer]);
 
   // Periodic screen capture, only while a timer we started this session is
-  // running and an API key is configured. Each frame's description is
-  // appended and the image itself is dropped immediately after.
+  // running and a local Ollama vision model is configured. Each frame's
+  // description is appended and the image itself is dropped immediately
+  // after — if Ollama isn't running, this just fails per-frame below.
   useEffect(() => {
-    if (!timer || !anthropicApiKey) return;
+    if (!timer || !ollamaVisionModel) return;
     let cancelled = false;
 
     async function captureOnce() {
       setCaptureStatus("capturing");
       try {
         const imageBase64 = await captureScreen();
-        const text = await describeFrame(anthropicApiKey!, imageBase64);
+        const text = await describeFrame(ollamaVisionModel!, imageBase64);
         if (!cancelled && text) {
           setFrames((prev) => [...prev, { at: new Date().toLocaleTimeString(), text }]);
           setCaptureStatus("idle");
@@ -138,7 +141,7 @@ export function TimerWidget({
       cancelled = true;
       clearInterval(id);
     };
-  }, [timer, anthropicApiKey]);
+  }, [timer, ollamaVisionModel]);
 
   if (!client) return null;
 
@@ -159,7 +162,7 @@ export function TimerWidget({
 
   async function handleStopClick() {
     if (!client) return;
-    if (frames.length === 0 || !anthropicApiKey) {
+    if (frames.length === 0 || !ollamaVisionModel) {
       // Nothing to summarize — stop immediately, same as before this feature.
       setBusy(true);
       try {
@@ -175,7 +178,7 @@ export function TimerWidget({
 
     setSynthesizing(true);
     try {
-      const draft = await synthesizeSessionNote(anthropicApiKey, frames);
+      const draft = await synthesizeSessionNote(ollamaVisionModel, frames);
       setReviewNote(draft);
     } catch (err) {
       // Summarization failing shouldn't block ending the session — fall
@@ -243,7 +246,7 @@ export function TimerWidget({
             {timer.clientName ? `${timer.clientName} — ` : ""}
             {timer.projectName}
           </span>
-          {anthropicApiKey ? (
+          {ollamaVisionModel ? (
             <span style={{ fontSize: 10, color: captureStatus === "error" ? "crimson" : "#999" }}>
               {captureStatus === "error"
                 ? "Last capture failed"
