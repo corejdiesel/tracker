@@ -235,6 +235,47 @@ export async function estimateTrailingCompanyProfit(
   };
 }
 
+/**
+ * The four raw figures a VAT nine-box calculation (lib/vat/nine-box.ts)
+ * needs for one period: output VAT and net sales from non-draft invoices
+ * issued in range, input VAT and net purchases from company expenses spent
+ * in range. Personal expenses are excluded — same `entity = 'company'`
+ * filter as estimateTrailingCompanyProfit, for the same reason: a VAT
+ * return is about the business's inputs and outputs, not the operator's.
+ */
+export async function aggregateVatPeriod(
+  startsOn: string,
+  endsOn: string
+): Promise<{
+  outputVatPence: bigint;
+  netSalesPence: bigint;
+  inputVatPence: bigint;
+  netPurchasesPence: bigint;
+}> {
+  const conn = await db();
+  const [invoiceRows, expenseRows] = await Promise.all([
+    conn.query<{ subtotal_pence: number; vat_pence: number }>(
+      `select subtotal_pence, vat_pence from public.invoices
+        where deleted_at is null and status <> 'draft'
+          and issue_date >= $1::date and issue_date <= $2::date`,
+      [startsOn, endsOn]
+    ),
+    conn.query<{ net_pence: number; vat_pence: number }>(
+      `select net_pence, vat_pence from public.expenses
+        where deleted_at is null and entity = 'company'
+          and spent_on >= $1::date and spent_on <= $2::date`,
+      [startsOn, endsOn]
+    ),
+  ]);
+
+  return {
+    outputVatPence: sumPence(invoiceRows.map((r) => toPence(r.vat_pence))),
+    netSalesPence: sumPence(invoiceRows.map((r) => toPence(r.subtotal_pence))),
+    inputVatPence: sumPence(expenseRows.map((r) => toPence(r.vat_pence))),
+    netPurchasesPence: sumPence(expenseRows.map((r) => toPence(r.net_pence))),
+  };
+}
+
 /* Export-only reads — no UI page uses these tables directly yet, so they
  * don't need a display-shaped join; the export just needs every column. */
 
